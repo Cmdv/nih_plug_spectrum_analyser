@@ -1,7 +1,11 @@
+mod audio;
+mod constants;
+
+use crate::audio::buffer;
+use audio::processor::AudioProcessor;
 use nih_plug::prelude::*;
 use std::sync::{Arc, Mutex};
 
-mod buffer;
 // This is a shortened version of the gain example with most comments removed, check out
 // https://github.com/robbert-vdh/nih-plug/blob/master/plugins/examples/gain/src/lib.rs to get
 // started
@@ -9,6 +13,7 @@ mod buffer;
 struct PluginLearn {
     params: Arc<PluginLearnParams>,
     waveform_buffer: Arc<Mutex<buffer::WaveformBuffer>>,
+    audio_processor: Option<AudioProcessor>,
 }
 
 #[derive(Params)]
@@ -26,6 +31,7 @@ impl Default for PluginLearn {
         Self {
             params: Arc::new(PluginLearnParams::default()),
             waveform_buffer: Arc::new(Mutex::new(buffer::WaveformBuffer::new())),
+            audio_processor: None,
         }
     }
 }
@@ -104,12 +110,16 @@ impl Plugin for PluginLearn {
     fn initialize(
         &mut self,
         _audio_io_layout: &AudioIOLayout,
-        _buffer_config: &BufferConfig,
+        buffer_config: &BufferConfig,
         _context: &mut impl InitContext<Self>,
     ) -> bool {
         // Resize buffers and perform other potentially expensive initialization operations here.
         // The `reset()` function is always called right after this function. You can remove this
         // function if you do not need it.
+        self.audio_processor = Some(AudioProcessor::new(
+            self.waveform_buffer.clone(),
+            buffer_config.max_buffer_size as usize,
+        ));
         true
     }
 
@@ -124,29 +134,19 @@ impl Plugin for PluginLearn {
         _aux: &mut AuxiliaryBuffers,
         _context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
-        let mut mono_samples: Vec<f32> = Vec::new();
-
-        for mut channel_samples in buffer.iter_samples() {
-            // Smoothing is optionally built into the parameters themselves
+        if let Some(processor) = &mut self.audio_processor {
             let gain = self.params.gain.smoothed.next();
-
-            let mut channels_vec: Vec<f32> = Vec::new();
-            for sample in channel_samples.iter_mut() {
-                channels_vec.push(*sample);
-                *sample *= gain; // Apply gain while we're here
+            // process the input audio
+            processor.process_buffer(buffer, gain);
+        } else {
+            // This will only print once in debug builds
+            #[cfg(debug_assertions)]
+            {
+                static ONCE: std::sync::Once = std::sync::Once::new();
+                ONCE.call_once(|| {
+                    eprintln!("WARNING: AudioProcessor not initialized! Was initialize() called?");
+                });
             }
-
-            let mono = if channels_vec.len() >= 2 {
-                (channels_vec[0] + channels_vec[1]) * 0.5
-            } else {
-                channels_vec[0]
-            };
-
-            mono_samples.push(mono);
-        }
-
-        if let Ok(mut buffer) = self.waveform_buffer.lock() {
-            buffer.write_samples(&mono_samples);
         }
 
         ProcessStatus::Normal

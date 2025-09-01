@@ -1,7 +1,7 @@
 use triple_buffer::TripleBuffer;
+use crate::constants::WAVEFORM_BUFFER_SIZE;
 
 // How many samples to keep for visualisation
-const WAVEFORM_BUFFER_SIZE: usize = 2048;
 
 pub struct WaveformBuffer {
     // Triple buffer for the lock-free communication

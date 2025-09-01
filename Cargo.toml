@@ -19,12 +19,13 @@ crate-type = ["cdylib"]
 nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git", features = ["assert_process_allocs"] }
 
 nih_plug_iced = { git = "https://github.com/robbert-vdh/nih-plug.git" }
-
 # Thread-safe audio buffering
 triple_buffer = "8.0"
-
 # For atomic operations
 atomic_float = "0.1"
+realfft = "3.3"
+apodize = "1.0"
+
 # Uncomment the below line to disable the on-by-default VST3 feature to remove
 # the GPL compatibility requirement
 # nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git", default-features = false, features = ["assert_process_allocs"] }
