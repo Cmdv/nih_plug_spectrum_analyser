@@ -23,33 +23,28 @@ impl WaveformBuffer {
         let (producer, consumer) = TripleBuffer::new(&buffer).split();
 
         Self {
-            producer: producer,
-            consumer: consumer,
+            producer,
+            consumer,
             temp_buffer: vec![0.0; WAVEFORM_BUFFER_SIZE],
             write_position: 0,
         }
-
-
-        // TODO: Initialize the struct
-        // - Set up temp_buffer with the same size
-        // - Initialize write_position to 0
     }
 
     // Called from audio thread - NO ALLOCATIONS!
     pub fn write_samples(&mut self, samples: &[f32]) {
-        // TODO:
-        // 1. Copy samples into temp_buffer at write_position
-        // 2. Update write_position
-        // 3. If buffer is full, send it to the consumer and reset
-        //
-        // Hint: use producer.write() to send data
-        // Remember: this runs 48,000+ times per second!
+        for &sample in samples {
+            self.temp_buffer[self.write_position] = sample;
+            self.write_position += 1;
+            if self.write_position >= WAVEFORM_BUFFER_SIZE {
+                // Buffer is full, send it to consumer
+                self.producer.write(self.temp_buffer.clone());
+                self.write_position = 0;
+            }
+        }
     }
 
     // Called from UI thread - can allocate
     pub fn read_samples(&mut self) -> Vec<f32> {
-        // TODO:
-        // 1. Check if new data is available with consumer.read()
-        // 2. Return a clone of the data (or interpolated/downsampled version)
+        self.consumer.read().clone()
     }
 }

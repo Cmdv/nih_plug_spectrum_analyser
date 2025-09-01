@@ -1,5 +1,5 @@
 use nih_plug::prelude::*;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 mod buffer;
 // This is a shortened version of the gain example with most comments removed, check out
@@ -8,6 +8,7 @@ mod buffer;
 
 struct PluginLearn {
     params: Arc<PluginLearnParams>,
+    waveform_buffer: Arc<Mutex<buffer::WaveformBuffer>>,
 }
 
 #[derive(Params)]
@@ -24,6 +25,7 @@ impl Default for PluginLearn {
     fn default() -> Self {
         Self {
             params: Arc::new(PluginLearnParams::default()),
+            waveform_buffer: Arc::new(Mutex::new(buffer::WaveformBuffer::new())),
         }
     }
 }
@@ -81,7 +83,6 @@ impl Plugin for PluginLearn {
         names: PortNames::const_default(),
     }];
 
-
     const MIDI_INPUT: MidiConfig = MidiConfig::None;
     const MIDI_OUTPUT: MidiConfig = MidiConfig::None;
 
@@ -123,13 +124,29 @@ impl Plugin for PluginLearn {
         _aux: &mut AuxiliaryBuffers,
         _context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
-        for channel_samples in buffer.iter_samples() {
+        let mut mono_samples: Vec<f32> = Vec::new();
+
+        for mut channel_samples in buffer.iter_samples() {
             // Smoothing is optionally built into the parameters themselves
             let gain = self.params.gain.smoothed.next();
 
-            for sample in channel_samples {
-                *sample *= gain;
+            let mut channels_vec: Vec<f32> = Vec::new();
+            for sample in channel_samples.iter_mut() {
+                channels_vec.push(*sample);
+                *sample *= gain; // Apply gain while we're here
             }
+
+            let mono = if channels_vec.len() >= 2 {
+                (channels_vec[0] + channels_vec[1]) * 0.5
+            } else {
+                channels_vec[0]
+            };
+
+            mono_samples.push(mono);
+        }
+
+        if let Ok(mut buffer) = self.waveform_buffer.lock() {
+            buffer.write_samples(&mono_samples);
         }
 
         ProcessStatus::Normal

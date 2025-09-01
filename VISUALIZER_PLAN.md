@@ -1,11 +1,12 @@
-# Audio Visualizer Implementation Plan for NIH-plug Gain Plugin
+# Spectrum Analyzer Implementation Plan for NIH-plug Gain Plugin
 
 ## 🎯 Project Goals
 - Learn Rust audio processing with NIH-plug
-- Implement real-time waveform visualization
+- Implement real-time spectrum analyzer (like EQ plugins)
 - Create custom UI with animations using Iced
 - Build reusable components for future audio plugins
 - Understand thread-safe audio data handling
+- Learn FFT and frequency domain analysis
 
 ## 🎓 Learning Approach
 **Important**: This is a guided learning project. Instead of copying code:
@@ -37,9 +38,10 @@ Audio Thread (Real-time)          UI Thread (Non-real-time)
 ### Data Flow
 1. **Audio Input** → Plugin process() method
 2. **Ring Buffer** → Lock-free circular buffer (triple_buffer crate)
-3. **UI Thread** → Reads buffer, calculates waveform points
-4. **Canvas** → Draws waveform with Iced graphics
-5. **Animation** → 60 FPS refresh for smooth visualization
+3. **UI Thread** → Reads buffer, performs FFT for frequency analysis
+4. **FFT Processing** → Convert time-domain to frequency bins
+5. **Canvas** → Draws spectrum bars with Iced graphics
+6. **Animation** → 60 FPS refresh with smoothing/decay
 
 ## 📦 Dependencies to Add
 
@@ -62,14 +64,17 @@ apodize = "1.0"  # Window functions for FFT
 
 ## 🎨 UI Components Plan
 
-### 1. Waveform Display Component
+### 1. Spectrum Analyzer Component
 ```rust
 // Key concepts to implement:
-- Circular buffer to store recent audio samples
-- Downsampling for display (e.g., 48kHz audio → 60Hz display)
-- Peak detection for better visualization
-- Smooth interpolation between points
-- Configurable colors and stroke width
+- FFT buffer (typically 1024, 2048, or 4096 samples)
+- Window function (Hann, Blackman-Harris) to reduce spectral leakage
+- FFT processing to get frequency bins
+- Logarithmic frequency scaling (20Hz to 20kHz)
+- Magnitude calculation and dB conversion
+- Smoothing/averaging for stable display
+- Smooth spectrum curve visualization (continuous line)
+- Optional fill gradient below the curve
 ```
 
 ### 2. Level Meter
@@ -92,30 +97,40 @@ apodize = "1.0"  # Window functions for FFT
 
 ## 🔧 Implementation Steps
 
-### Phase 1: Basic Setup ✅ Current
+### Phase 1: Basic Setup ✅ COMPLETED
 - [x] Analyze existing NIH-plug gain example
-- [ ] Add Iced dependencies to Cargo.toml
-- [ ] Create basic plugin editor structure
+- [x] Add triple_buffer dependency to Cargo.toml
+- [x] Create basic plugin structure
 
-### Phase 2: Audio Buffer System
-- [ ] Implement triple buffer for audio data
-- [ ] Create `WaveformBuffer` struct with:
-  - Fixed-size circular buffer
-  - Write method (audio thread)
-  - Read method (UI thread)
-- [ ] Add buffer to plugin struct
+### Phase 2: Audio Buffer System ✅ COMPLETED
+- [x] Implement triple buffer for audio data
+- [x] Create `WaveformBuffer` struct with:
+  - Fixed-size circular buffer (2048 samples)
+  - Write method (audio thread) - writes samples without allocation
+  - Read method (UI thread) - returns cloned Vec<f32>
+- [x] Add buffer to plugin struct (using Arc<Mutex<WaveformBuffer>>)
+- [x] Hook into process() method - collecting mono mix of stereo channels
+- [x] Test build passes (with expected warnings for unused consumer/read_samples)
 
-### Phase 3: Basic Waveform Display
-- [ ] Create `WaveformView` Iced widget
-- [ ] Implement canvas drawing with basic line
-- [ ] Connect to audio buffer
+### Phase 3: FFT Setup ← NEXT
+- [ ] Add realfft and apodize dependencies
+- [ ] Create FFT processor struct
+- [ ] Implement window function (Hann)
+- [ ] Setup FFT plan with appropriate size (2048)
+- [ ] Convert buffer to frequency domain
+
+### Phase 4: Spectrum Display
+- [ ] Create `SpectrumView` Iced widget
+- [ ] Implement frequency bin to pixel mapping
+- [ ] Add logarithmic frequency scaling
+- [ ] Draw smooth spectrum curve with canvas
 - [ ] Add 60 FPS refresh timer
 
-### Phase 4: Enhanced Visualization
-- [ ] Add peak detection algorithm
-- [ ] Implement smooth interpolation
-- [ ] Add fade effect for older samples
-- [ ] Create gradient fill option
+### Phase 5: Enhanced Visualization
+- [ ] Add magnitude smoothing/averaging
+- [ ] Implement curve interpolation for smoother lines
+- [ ] Add gradient fill below curve
+- [ ] Grid lines for frequency/dB reference
 
 ### Phase 5: UI Controls
 - [ ] Custom gain knob widget
@@ -136,9 +151,10 @@ src/
 ├── lib.rs                 # Main plugin implementation
 ├── editor.rs              # Iced editor setup
 ├── buffer.rs              # Audio buffer management
+├── fft.rs                 # FFT processor and frequency analysis
 ├── widgets/
 │   ├── mod.rs
-│   ├── waveform.rs        # Waveform display widget
+│   ├── spectrum.rs        # Spectrum analyzer widget
 │   ├── level_meter.rs     # VU/Peak meter widget
 │   └── knob.rs            # Custom knob widget
 └── style/
@@ -203,17 +219,29 @@ src/
 
 ## 📝 Session Notes
 
-### Session 1 (Current)
+### Session 1 
 - Explored NIH-plug structure
 - Decided on Iced for better waveform visualization
 - Created this planning document
-- Ready to implement basic buffer system
+
+### Session 2 (Current - December 2024)
+- ✅ Implemented complete buffer system in `src/buffer.rs`
+  - Triple buffer with producer/consumer split
+  - Lock-free communication between threads
+  - 2048 sample circular buffer
+- ✅ Integrated buffer into main plugin (`src/lib.rs`)
+  - Added Arc<Mutex<WaveformBuffer>> to plugin struct
+  - Hooked into process() method
+  - Collecting mono mix of stereo channels
+  - Applying gain AFTER capturing original signal for visualization
+- ✅ Learned about Rust references (&T vs T), ownership, and type annotations
 
 ### Next Session Tasks
-1. Add dependencies to Cargo.toml
-2. Create `buffer.rs` with `WaveformBuffer` struct
-3. Implement basic Iced editor
-4. Test with simple waveform drawing
+1. Add realfft and apodize dependencies to Cargo.toml
+2. Create `fft.rs` module for FFT processing
+3. Modify buffer to work with FFT window sizes
+4. Implement FFT processing on the UI thread
+5. Then move to Iced UI for spectrum display
 
 ## 🎨 Visual Design Ideas
 
