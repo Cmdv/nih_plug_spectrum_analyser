@@ -1,8 +1,11 @@
 mod audio;
 mod constants;
+mod editor;
+mod ui;
 
 use crate::audio::buffer;
 use audio::processor::AudioProcessor;
+use editor::PluginEditor;
 use nih_plug::prelude::*;
 use std::sync::{Arc, Mutex};
 
@@ -13,7 +16,7 @@ use std::sync::{Arc, Mutex};
 struct PluginLearn {
     params: Arc<PluginLearnParams>,
     waveform_buffer: Arc<Mutex<buffer::WaveformBuffer>>,
-    audio_processor: Option<AudioProcessor>,
+    audio_processor: Option<Arc<Mutex<AudioProcessor>>>,
 }
 
 #[derive(Params)]
@@ -116,10 +119,10 @@ impl Plugin for PluginLearn {
         // Resize buffers and perform other potentially expensive initialization operations here.
         // The `reset()` function is always called right after this function. You can remove this
         // function if you do not need it.
-        self.audio_processor = Some(AudioProcessor::new(
+        self.audio_processor = Some(Arc::new(Mutex::new(AudioProcessor::new(
             self.waveform_buffer.clone(),
             buffer_config.max_buffer_size as usize,
-        ));
+        ))));
         true
     }
 
@@ -136,6 +139,7 @@ impl Plugin for PluginLearn {
     ) -> ProcessStatus {
         if let Some(processor) = &mut self.audio_processor {
             let gain = self.params.gain.smoothed.next();
+            let mut processor = processor.lock().unwrap();
             // process the input audio
             processor.process_buffer(buffer, gain);
         } else {
@@ -150,6 +154,11 @@ impl Plugin for PluginLearn {
         }
 
         ProcessStatus::Normal
+    }
+
+    fn editor(&mut self, _async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
+        let editor = PluginEditor::new(self.audio_processor.clone()?, self.params.clone());
+        Some(Box::new(editor))
     }
 }
 

@@ -112,15 +112,16 @@ apodize = "1.0"  # Window functions for FFT
 - [x] Hook into process() method - collecting mono mix of stereo channels
 - [x] Test build passes (with expected warnings for unused consumer/read_samples)
 
-### Phase 3: FFT Setup ← NEXT
-- [ ] Add realfft and apodize dependencies
-- [ ] Create FFT processor struct
-- [ ] Implement window function (Hann)
-- [ ] Setup FFT plan with appropriate size (2048)
-- [ ] Convert buffer to frequency domain
+### Phase 3: FFT Setup ✅ COMPLETED
+- [x] Add realfft and apodize dependencies
+- [x] Create FFT processor struct
+- [x] Implement window function (Hann)
+- [x] Setup FFT plan with appropriate size (2048)
+- [x] Convert buffer to frequency domain
 
-### Phase 4: Spectrum Display
-- [ ] Create `SpectrumView` Iced widget
+### Phase 4: Spectrum Display ← CURRENT
+- [x] Create `src/ui/` folder structure
+- [ ] Create `SpectrumView` Iced widget using `iced::widget::canvas`
 - [ ] Implement frequency bin to pixel mapping
 - [ ] Add logarithmic frequency scaling
 - [ ] Draw smooth spectrum curve with canvas
@@ -148,18 +149,21 @@ apodize = "1.0"  # Window functions for FFT
 
 ```
 src/
-├── lib.rs                 # Main plugin implementation
-├── editor.rs              # Iced editor setup
-├── buffer.rs              # Audio buffer management
-├── fft.rs                 # FFT processor and frequency analysis
-├── widgets/
-│   ├── mod.rs
-│   ├── spectrum.rs        # Spectrum analyzer widget
-│   ├── level_meter.rs     # VU/Peak meter widget
-│   └── knob.rs            # Custom knob widget
-└── style/
-    ├── mod.rs
-    └── theme.rs           # Color schemes and styling
+├── lib.rs                 # Main plugin implementation ✅
+├── constants.rs           # Shared constants ✅
+├── audio/                 # Audio processing modules ✅
+│   ├── mod.rs            # Module exports
+│   ├── buffer.rs         # Audio buffer management
+│   ├── fft.rs            # FFT processor and frequency analysis
+│   └── processor.rs      # Audio processing logic
+├── ui/                    # UI components ✅
+│   ├── mod.rs            # Module exports
+│   ├── spectrum.rs       # Spectrum analyzer widget (IN PROGRESS)
+│   ├── knob.rs           # Custom knob widget (TO CREATE)
+│   └── style/            # UI styling (TO CREATE)
+│       ├── mod.rs        # Style module exports
+│       └── theme.rs      # Color schemes and styling
+└── editor.rs              # Iced editor setup (TO CREATE)
 ```
 
 ## 🎯 Key Rust Concepts to Learn
@@ -224,8 +228,8 @@ src/
 - Decided on Iced for better waveform visualization
 - Created this planning document
 
-### Session 2 (Current - December 2024)
-- ✅ Implemented complete buffer system in `src/buffer.rs`
+### Session 2
+- ✅ Implemented complete buffer system in `src/audio/buffer.rs`
   - Triple buffer with producer/consumer split
   - Lock-free communication between threads
   - 2048 sample circular buffer
@@ -236,12 +240,44 @@ src/
   - Applying gain AFTER capturing original signal for visualization
 - ✅ Learned about Rust references (&T vs T), ownership, and type annotations
 
-### Next Session Tasks
-1. Add realfft and apodize dependencies to Cargo.toml
-2. Create `fft.rs` module for FFT processing
-3. Modify buffer to work with FFT window sizes
-4. Implement FFT processing on the UI thread
-5. Then move to Iced UI for spectrum display
+### Session 3
+- ✅ Reorganized code structure into `audio/` and `ui/` modules
+- ✅ Implemented FFT processing in `audio/fft.rs`
+- ✅ Added audio processor for managing the processing pipeline
+- ✅ Set up UI folder structure with `ui/spectrum.rs`
+
+### Session 4
+- Created `ui/` folder structure for Iced widgets
+- Researched nih_plug_iced documentation
+- Decided to use standard Iced canvas widget for spectrum analyzer
+- Working on `SpectrumView` widget implementation
+
+### Session 5 (Current)
+- ✅ Removed `nih_plug_iced` dependency - using Iced directly for canvas support
+- ✅ Added `iced = { version = "0.12", features = ["canvas"] }` to Cargo.toml
+- ✅ Created `SpectrumView` struct with public fields in `ui/spectrum.rs`
+- ✅ Implemented `Program<(), iced::Theme>` trait for SpectrumView with basic draw method
+- ✅ Created `editor.rs` with `PluginEditor` struct
+- ✅ Implemented NIH-plug `Editor` trait for PluginEditor (basic methods)
+- ✅ Changed `AudioProcessor` to use `Arc<Mutex<>>` for thread-safe sharing
+- ✅ Connected editor to plugin via `editor()` method in lib.rs
+- 🚧 Need to implement `spawn()` method to create actual Iced window
+- 🚧 Need to implement Iced `Application` trait properly (currently has todo!())
+
+### Architecture Decisions
+- **UI Framework**: Using Iced 0.12 directly (not nih_plug_iced) for full canvas access
+- **Thread Safety**: `AudioProcessor` wrapped in `Arc<Mutex<>>` for sharing between audio and UI threads
+- **Parameter Updates**: Will use `GuiContext` and `ParamSetter` for bidirectional parameter communication
+- **Spectrum Data**: Planning to pass FFT data from processor to UI via shared Arc
+
+### Next Tasks
+1. Implement `spawn()` method in Editor trait to create Iced window
+2. Fix Iced `Application::new()` method in PluginEditor
+3. Implement `view()` method to display Canvas with SpectrumView
+4. Connect FFT output from AudioProcessor to SpectrumView
+5. Add frequency bin to pixel mapping logic in spectrum draw
+6. Add 60 FPS refresh timer for smooth animation
+7. Implement gain knob widget
 
 ## 🎨 Visual Design Ideas
 

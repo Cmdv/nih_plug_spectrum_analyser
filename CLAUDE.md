@@ -22,7 +22,7 @@ This is a NIH-plug based audio gain plugin with real-time waveform visualization
 
 ## Key Files
 - `src/lib.rs` - Main plugin implementation (WITH BUFFER INTEGRATED)
-- `VISUALIZER_PLAN.md` - **CRITICAL: Read this for current progress and next steps**
+- `PLAN.md` - **CRITICAL: Read this for current progress and next steps**
 - `src/buffer.rs` - Audio buffer management (COMPLETED)
 - `src/editor.rs` - (To create) Iced UI implementation
 
@@ -58,7 +58,7 @@ When asked for help:
 User is learning Rust/NIH-plug/audio processing. They prefer to write code themselves with guidance rather than having code written for them. Focus on teaching and explaining.
 
 ## IMPORTANT FOR NEW SESSIONS
-**ALWAYS READ `VISUALIZER_PLAN.md` FIRST** - It contains:
+**ALWAYS READ `PLAN.md` FIRST** - It contains:
 - Current implementation status (what's completed vs pending)
 - Session notes showing exactly where we left off
 - Next tasks to work on
