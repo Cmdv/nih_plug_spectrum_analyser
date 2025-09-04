@@ -3,9 +3,15 @@ use crate::ui::SpectrumView;
 use crate::PluginLearnParams;
 use nih_plug::context::gui::GuiContext;
 use nih_plug_iced::executor::Default;
-use nih_plug_iced::{Element, IcedEditor, Renderer, Task, Theme};
-use std::sync::Arc;
-use std::sync::Mutex;
+use nih_plug_iced::widget::canvas::Canvas;
+use nih_plug_iced::{Element, IcedEditor, Length, Renderer, Task, Theme};
+use nih_plug_iced::futures::Subscription;
+use std::sync::{Arc, Mutex};
+
+#[derive(Debug, Clone)]
+pub enum Message {
+    Tick, // Timer tick for regular redraws
+}
 
 #[derive(Clone)]
 pub struct EditorInitFlags {
@@ -22,7 +28,7 @@ pub struct PluginEditor {
 
 impl IcedEditor for PluginEditor {
     type Executor = Default;
-    type Message = (); // Your message enum
+    type Message = Message;
     type InitializationFlags = EditorInitFlags; // Data needed to create editor
     type Theme = Theme;
 
@@ -30,17 +36,18 @@ impl IcedEditor for PluginEditor {
         initialization_flags: Self::InitializationFlags,
         context: Arc<dyn GuiContext>,
     ) -> (Self, Task<Self::Message>) {
-        let frequency_bins = Arc::new(vec![0.0; 1024]); // Placeholder data
+        let frequency_bins = initialization_flags
+            .audio_processor
+            .lock()
+            .unwrap()
+            .spectrum_data
+            .clone();
 
         let editor = Self {
             audio_processor: initialization_flags.audio_processor,
             params: initialization_flags.params,
-            spectrum_view: SpectrumView {
-                frequency_bins,
-                width: 800.0,
-                height: 400.0,
-            },
-            context, // Store the context!
+            spectrum_view: SpectrumView { frequency_bins },
+            context,
         };
 
         (editor, Task::none()) // Return editor and no initial task
@@ -50,14 +57,32 @@ impl IcedEditor for PluginEditor {
         self.context.as_ref()
     }
 
-    fn update(&mut self, _message: Self::Message) -> Task<Self::Message> {
-        Task::none() // No updates yet
+    fn update(&mut self, message: Self::Message) -> Task<Self::Message> {
+        match message {
+            Message::Tick => {
+                // Request a redraw by returning none
+                // The canvas will automatically redraw with latest spectrum data
+                Task::none()
+            }
+        }
+    }
+
+    fn subscription(
+        &self,
+        window_subs: &mut nih_plug_iced::window::WindowSubs<Self::Message>,
+    ) -> Subscription<Self::Message> {
+        // Set up a callback that runs before each frame render
+        window_subs.on_frame = Some(Arc::new(|| Some(Message::Tick)));
+
+        // Return no additional subscriptions
+        Subscription::none()
     }
 
     fn view(&self) -> Element<'_, Self::Message, Self::Theme, Renderer> {
-        // Create a Canvas widget using your SpectrumView
-        use nih_plug_iced::widget::canvas::Canvas;
-        Canvas::new(&self.spectrum_view).into()
+        Canvas::new(&self.spectrum_view)
+            .width(Length::Fill) // Fill available width
+            .height(Length::Fill) // Fill available height
+            .into()
     }
 
     fn theme(&self) -> Self::Theme {

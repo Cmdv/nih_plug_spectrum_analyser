@@ -316,14 +316,19 @@ src/
 - Canvas Program trait requires proper bounds and geometry handling
 - CLAP plugins auto-opening editor windows is standard behavior
 
-### Next Tasks
-1. Replace test line with actual spectrum visualization
-2. Connect real FFT data from AudioProcessor to SpectrumView 
-3. Implement frequency bin to pixel mapping (logarithmic scaling)
-4. Add magnitude calculation and dB conversion for spectrum display
-5. Implement smoothing/averaging for stable spectrum display
-6. Add 60 FPS refresh timer for smooth animation
-7. Implement gain knob widget for parameter control
+### Current Issue
+**FFT data not reaching UI**: FFT is computing spectrum data (32-36 dB) but UI shows 0 values.
+Problem: Editor creates separate AudioProcessor from the one that processes audio.
+Solution: Share `spectrum_data` between AudioProcessor instances at plugin level.
+
+### Next Tasks  
+1. Fix spectrum data sharing between audio thread and UI thread
+2. Verify spectrum visualization displays real audio data
+3. Implement pre/post gain spectrum comparison
+4. Add padding/margins around spectrum display
+5. Optimize spectrum curve smoothing and interpolation
+6. Implement gain knob widget for parameter control
+7. Add frequency and dB labels to grid
 
 ## 🎨 Visual Design Ideas
 
@@ -360,12 +365,28 @@ const GRID: Color = Color::from_rgba(0.3, 0.3, 0.4, 0.3);
 
 ## 🔗 Useful Commands
 
+### Build and Install Plugin
 ```bash
 # Build the plugin
 cargo xtask bundle plugin_learn --release
 
-# Run with logging
-RUST_LOG=debug cargo run
+# Install plugin to system CLAP directory (macOS)
+sudo cp -r ./target/bundled/plugin-learn.clap /Library/Audio/Plug-Ins/CLAP
+
+# Remove existing plugin (if updating)
+sudo rm -rf /Library/Audio/Plug-Ins/CLAP/plugin-learn.clap
+```
+
+### Debug and Logging
+```bash
+# Launch Bitwig with NIH-plug logging enabled
+NIH_LOG=/Users/cmdv/Library/Logs/Bitwig/nih.log ./Applications/Bitwig\ Studio.app/Contents/MacOS/BitwigStudio
+
+# Watch log file in real-time (in separate terminal)
+tail -f /Users/cmdv/Library/Logs/Bitwig/nih.log
+
+# Alternative: Watch Bitwig's own log
+tail -f /Users/cmdv/Library/Logs/Bitwig/BitwigStudio.log
 
 # Check for audio thread allocations
 cargo build --features assert_process_allocs

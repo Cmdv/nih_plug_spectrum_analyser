@@ -61,8 +61,8 @@ impl Default for PluginLearnParams {
                 },
             )
             // Because the gain parameter is stored as linear gain instead of storing the value as
-            // decibels, we need logarithmic smoothing
-            .with_smoother(SmoothingStyle::Logarithmic(50.0))
+            // decibels, we need logarithmic smoothing (reduced from 50ms to 5ms for faster response)
+            .with_smoother(SmoothingStyle::Logarithmic(5.0))
             .with_unit(" dB")
             // There are many predefined formatters we can use here. If the gain was stored as
             // decibels instead of as a linear gain value, we could have also used the
@@ -120,6 +120,12 @@ impl Plugin for PluginLearn {
         buffer_config: &BufferConfig,
         _context: &mut impl InitContext<Self>,
     ) -> bool {
+        // Use nih_plug's logging system properly
+        nih_plug::nih_log!(
+            "Plugin initialize called, buffer_size: {}",
+            buffer_config.max_buffer_size
+        );
+
         // Resize buffers and perform other potentially expensive initialization operations here.
         // The `reset()` function is always called right after this function. You can remove this
         // function if you do not need it.
@@ -127,6 +133,8 @@ impl Plugin for PluginLearn {
             self.waveform_buffer.clone(),
             buffer_config.max_buffer_size as usize,
         ))));
+
+        nih_plug::nih_log!("Plugin initialized successfully");
         true
     }
 
@@ -142,30 +150,40 @@ impl Plugin for PluginLearn {
         _context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
         if let Some(processor) = &mut self.audio_processor {
-            let gain = self.params.gain.smoothed.next();
+            // First, collect pre-gain audio for FFT analysis
             let mut processor = processor.lock().unwrap();
-            // process the input audio
-            processor.process_buffer(buffer, gain);
-        } else {
-            // This will only print once in debug builds
-            #[cfg(debug_assertions)]
-            {
-                static ONCE: std::sync::Once = std::sync::Once::new();
-                ONCE.call_once(|| {
-                    eprintln!("WARNING: AudioProcessor not initialized! Was initialize() called?");
-                });
+
+            // Get the current "target" gain value (not smoothed) for future pre/post gain visualization
+            let _target_gain = self.params.gain.value();
+
+            // Process the buffer to collect PRE-GAIN samples for FFT
+            processor.process_buffer_pre_gain(buffer);
+            drop(processor);
+
+            // Now apply smoothed gain to the actual output (per-sample for smooth transition)
+            for channel_samples in buffer.iter_samples() {
+                // Call next() for EACH sample - this is what makes gain changes smooth
+                let gain = self.params.gain.smoothed.next();
+                for sample in channel_samples {
+                    *sample *= gain;
+                }
             }
         }
-
         ProcessStatus::Normal
     }
 
     fn editor(&mut self, _async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
+        nih_plug::nih_log!("Editor requested");
+
         // Editor can be requested before initialize() is called, so we need to handle
         // the case where audio_processor is None by creating one for the editor
         let audio_processor = match &self.audio_processor {
-            Some(processor) => processor.clone(),
+            Some(processor) => {
+                nih_plug::nih_log!("Using existing audio_processor");
+                processor.clone()
+            }
             None => {
+                nih_plug::nih_log!("Creating new audio_processor for editor");
                 // Create audio processor for the editor if not initialized yet
                 Arc::new(Mutex::new(AudioProcessor::new(
                     self.waveform_buffer.clone(),
