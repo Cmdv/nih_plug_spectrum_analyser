@@ -1,5 +1,5 @@
-use triple_buffer::TripleBuffer;
 use crate::constants::WAVEFORM_BUFFER_SIZE;
+use triple_buffer::TripleBuffer;
 
 // How many samples to keep for visualisation
 

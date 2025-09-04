@@ -1,5 +1,5 @@
-use iced::widget::canvas::{self, Canvas, Frame, Geometry, Path, Program};
-use iced::{mouse, Color, Point, Rectangle, Renderer, Theme};
+use nih_plug_iced::widget::canvas::{Frame, Geometry, Path, Program, Stroke};
+use nih_plug_iced::{mouse, Color, Point, Rectangle, Renderer, Theme};
 use std::sync::Arc;
 
 pub struct SpectrumView {
@@ -11,33 +11,38 @@ pub struct SpectrumView {
     pub height: f32,
 }
 
-impl Program<(), iced::Theme> for SpectrumView {
+impl Program<(), Theme> for SpectrumView {
     type State = ();
 
     fn draw(
         &self,
-        state: &Self::State,
+        _state: &Self::State,
         renderer: &Renderer,
-        theme: &Theme,
+        _theme: &Theme,
         bounds: Rectangle,
-        cursor: mouse::Cursor,
+        _cursor: mouse::Cursor,
     ) -> Vec<Geometry> {
-        // Create frame
-        // Draw spectrum
-        // Return geometry
         let mut frame = Frame::new(renderer, bounds.size());
 
-        // For now, just draw a simple test line to verify it works
-        let start = Point::new(0.0, bounds.height / 2.0);
-        let end = Point::new(bounds.width, bounds.height / 2.0);
+        // Fill background to verify Canvas is working
+        frame.fill_rectangle(
+            Point::ORIGIN,
+            bounds.size(),
+            Color::from_rgb(0.1, 0.1, 0.2), // Dark blue background
+        );
+
+        // Draw a thick, bright line across the middle
+        let start = Point::new(10.0, bounds.height / 2.0);
+        let end = Point::new(bounds.width - 10.0, bounds.height / 2.0);
 
         let path = Path::line(start, end);
         frame.stroke(
-            &path,
-            iced::widget::canvas::Stroke::default().with_color(Color::WHITE),
+            &path, 
+            Stroke::default()
+                .with_color(Color::from_rgb(0.0, 1.0, 0.5)) // Bright green
+                .with_width(5.0) // Thick line
         );
 
-        // Return the geometry
         vec![frame.into_geometry()]
     }
 }

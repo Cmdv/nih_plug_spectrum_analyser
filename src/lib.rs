@@ -5,8 +5,10 @@ mod ui;
 
 use crate::audio::buffer;
 use audio::processor::AudioProcessor;
+use editor::EditorInitFlags;
 use editor::PluginEditor;
 use nih_plug::prelude::*;
+use nih_plug_iced::{create_iced_editor, IcedState};
 use std::sync::{Arc, Mutex};
 
 // This is a shortened version of the gain example with most comments removed, check out
@@ -17,6 +19,7 @@ struct PluginLearn {
     params: Arc<PluginLearnParams>,
     waveform_buffer: Arc<Mutex<buffer::WaveformBuffer>>,
     audio_processor: Option<Arc<Mutex<AudioProcessor>>>,
+    iced_state: Arc<IcedState>,
 }
 
 #[derive(Params)]
@@ -35,6 +38,7 @@ impl Default for PluginLearn {
             params: Arc::new(PluginLearnParams::default()),
             waveform_buffer: Arc::new(Mutex::new(buffer::WaveformBuffer::new())),
             audio_processor: None,
+            iced_state: IcedState::from_size(800, 600),
         }
     }
 }
@@ -70,7 +74,7 @@ impl Default for PluginLearnParams {
 }
 
 impl Plugin for PluginLearn {
-    const NAME: &'static str = "Plugin Learn";
+    const NAME: &'static str = "plugin-learn";
     const VENDOR: &'static str = "Cmdv";
     const URL: &'static str = env!("CARGO_PKG_HOMEPAGE");
     const EMAIL: &'static str = "info@cmdv.me";
@@ -157,8 +161,29 @@ impl Plugin for PluginLearn {
     }
 
     fn editor(&mut self, _async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
-        let editor = PluginEditor::new(self.audio_processor.clone()?, self.params.clone());
-        Some(Box::new(editor))
+        // Editor can be requested before initialize() is called, so we need to handle
+        // the case where audio_processor is None by creating one for the editor
+        let audio_processor = match &self.audio_processor {
+            Some(processor) => processor.clone(),
+            None => {
+                // Create audio processor for the editor if not initialized yet
+                Arc::new(Mutex::new(AudioProcessor::new(
+                    self.waveform_buffer.clone(),
+                    1024, // default buffer size
+                )))
+            }
+        };
+
+        let init_flags = EditorInitFlags {
+            audio_processor,
+            params: self.params.clone(),
+        };
+
+        create_iced_editor::<PluginEditor>(
+            self.iced_state.clone(),
+            init_flags,
+            Vec::new(), // fonts
+        )
     }
 }
 
@@ -181,4 +206,3 @@ impl Vst3Plugin for PluginLearn {
 }
 
 nih_export_clap!(PluginLearn);
-nih_export_vst3!(PluginLearn);

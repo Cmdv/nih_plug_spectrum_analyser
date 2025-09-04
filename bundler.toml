@@ -5,4 +5,4 @@
 # name = "Human Readable Plugin Name"  # defaults to <package_name>
 
 [plugin_learn]
-name = "Plugin Learn"
+name = "plugin-learn"

@@ -252,7 +252,7 @@ src/
 - Decided to use standard Iced canvas widget for spectrum analyzer
 - Working on `SpectrumView` widget implementation
 
-### Session 5 (Current)
+### Session 5
 - ✅ Removed `nih_plug_iced` dependency - using Iced directly for canvas support
 - ✅ Added `iced = { version = "0.12", features = ["canvas"] }` to Cargo.toml
 - ✅ Created `SpectrumView` struct with public fields in `ui/spectrum.rs`
@@ -264,20 +264,66 @@ src/
 - 🚧 Need to implement `spawn()` method to create actual Iced window
 - 🚧 Need to implement Iced `Application` trait properly (currently has todo!())
 
+### Session 6
+- ✅ Updated local `nih-plug` fork to iced 0.13 with Canvas support
+- ✅ Modified `nih_plug_iced` to use BillyDM/iced_baseview (supports iced 0.13)
+- ✅ Canvas feature is available through feature flag chain:
+  - Project → `nih_plug_iced` (features = ["canvas"])
+  - `nih_plug_iced` → `iced_baseview/canvas`
+  - `iced_baseview` → `iced_widget/canvas`
+- 📝 **To use Canvas with nih_plug_iced:**
+  ```toml
+  # In Cargo.toml
+  nih_plug = { path = "../nih-plug", features = ["assert_process_allocs"] }
+  nih_plug_iced = { path = "../nih-plug/nih_plug_iced", features = ["canvas"] }
+  ```
+  ```rust
+  // In your code
+  use nih_plug_iced::widget::canvas::{Canvas, Frame, Geometry, Path, Program};
+  ```
+- 📝 **Local dependencies compile automatically** - no need to pre-build, Cargo handles it
+
 ### Architecture Decisions
-- **UI Framework**: Using Iced 0.12 directly (not nih_plug_iced) for full canvas access
+- **UI Framework**: Switch back to `nih_plug_iced` (now with iced 0.13 + Canvas support)
+- **Canvas Access**: Through `nih_plug_iced::widget::canvas` module
 - **Thread Safety**: `AudioProcessor` wrapped in `Arc<Mutex<>>` for sharing between audio and UI threads
 - **Parameter Updates**: Will use `GuiContext` and `ParamSetter` for bidirectional parameter communication
 - **Spectrum Data**: Planning to pass FFT data from processor to UI via shared Arc
 
+### Session 7 (Current)
+- ✅ **BREAKTHROUGH**: Fixed editor window not appearing issue
+  - Problem: `audio_processor` was `None` when `editor()` method called
+  - Solution: Create dummy AudioProcessor when needed for editor initialization
+  - Result: Plugin now shows window icon and opens editor successfully
+- ✅ **Canvas rendering working**: 
+  - Dark blue background renders properly
+  - Bright green test line displays correctly
+  - Canvas Program trait implementation is functional
+- ✅ **IcedEditor trait implementation complete**:
+  - Fixed `IcedEditor` vs `Application` trait confusion
+  - Implemented proper `new()`, `context()`, `update()`, `view()`, `theme()` methods
+  - Added `EditorInitFlags` struct with Clone derive for proper initialization
+  - Removed old `Editor` trait implementation (handled by `create_iced_editor`)
+- ✅ **Architecture working end-to-end**:
+  - Plugin loads in Bitwig (CLAP format)
+  - Automatic editor window opening (normal behavior)
+  - UI thread and audio thread separation functioning
+  - Ready for actual spectrum analyzer implementation
+
+### Key Learning Points
+- NIH-plug editor lifecycle: `editor()` can be called before `initialize()`
+- `create_iced_editor()` handles the `Editor` trait wrapper automatically
+- Canvas Program trait requires proper bounds and geometry handling
+- CLAP plugins auto-opening editor windows is standard behavior
+
 ### Next Tasks
-1. Implement `spawn()` method in Editor trait to create Iced window
-2. Fix Iced `Application::new()` method in PluginEditor
-3. Implement `view()` method to display Canvas with SpectrumView
-4. Connect FFT output from AudioProcessor to SpectrumView
-5. Add frequency bin to pixel mapping logic in spectrum draw
+1. Replace test line with actual spectrum visualization
+2. Connect real FFT data from AudioProcessor to SpectrumView 
+3. Implement frequency bin to pixel mapping (logarithmic scaling)
+4. Add magnitude calculation and dB conversion for spectrum display
+5. Implement smoothing/averaging for stable spectrum display
 6. Add 60 FPS refresh timer for smooth animation
-7. Implement gain knob widget
+7. Implement gain knob widget for parameter control
 
 ## 🎨 Visual Design Ideas
 
