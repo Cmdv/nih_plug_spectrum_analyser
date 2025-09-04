@@ -29,7 +29,7 @@ This is a NIH-plug based audio gain plugin with real-time waveform visualization
 ## Commands
 ```bash
 # Build the plugin
-cargo xtask bundle plugin_learn --release
+cargo xtask bundle plugin-learn --release
 
 # Test build
 cargo build

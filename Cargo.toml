@@ -1,5 +1,5 @@
 [package]
-name = "plugin_learn"
+name = "plugin-learn"
 version = "0.1.0"
 edition = "2021"
 authors = ["Cmdv <info@cmdv.me>"]

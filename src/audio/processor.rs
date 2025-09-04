@@ -1,7 +1,7 @@
 use nih_plug::buffer::Buffer;
 
+use crate::audio::buffer::WaveformBuffer;
 use crate::audio::fft::FftProcessor;
-use crate::{audio::buffer::WaveformBuffer, constants::WAVEFORM_BUFFER_SIZE};
 use std::sync::{Arc, Mutex, RwLock};
 
 pub struct AudioProcessor {
@@ -16,26 +16,24 @@ pub struct AudioProcessor {
     // Performs Fast Fourier Transform to convert audio samples to frequency data
     // Takes 2048 time-domain samples, outputs 1025 frequency bins
     fft_processor: FftProcessor,
-
-    // Stores FFT output (frequency magnitudes) for the UI to read
-    // Shared between audio thread (writes) and UI thread (reads)
-    // Contains 1025 values representing frequencies from 0Hz to 22.05kHz
-    pub spectrum_data: Arc<RwLock<Vec<f32>>>,
 }
 
 impl AudioProcessor {
     pub fn new(waveform_buffer: Arc<Mutex<WaveformBuffer>>, max_buffer_size: usize) -> Self {
         // FFT of N real samples produces N/2 + 1 complex frequency bins
-        let fft_output_size = WAVEFORM_BUFFER_SIZE / 2 + 1;
+        // let fft_output_size = WAVEFORM_BUFFER_SIZE / 2 + 1;
         Self {
             waveform_buffer,
             mono_scratch: Vec::with_capacity(max_buffer_size), // Pre-allocate reasonable size
             fft_processor: FftProcessor::new(),
-            spectrum_data: Arc::new(RwLock::new(vec![0.0; fft_output_size])),
         }
     }
 
-    pub fn process_buffer_pre_gain(&mut self, buffer: &mut Buffer) {
+    pub fn process_buffer_pre_gain(
+        &mut self,
+        buffer: &mut Buffer,
+        spectrum_data: Arc<RwLock<Vec<f32>>>,
+    ) {
         self.mono_scratch.clear();
 
         // Process PRE-GAIN audio for spectrum analysis (we won't modify the buffer)
@@ -75,23 +73,28 @@ impl AudioProcessor {
 
             // Run FFT on the samples to get frequency data
             let spectrum = self.fft_processor.process(&samples_for_fft);
-            
+
             // Log FFT data occasionally to check it's working
             static mut FFT_LOG_COUNTER: u32 = 0;
             unsafe {
                 FFT_LOG_COUNTER += 1;
-                if FFT_LOG_COUNTER >= 1000 {  // Log every ~10 seconds at 100Hz
+                if FFT_LOG_COUNTER >= 1000 {
+                    // Log every ~10 seconds at 100Hz
                     FFT_LOG_COUNTER = 0;
                     if spectrum.len() > 10 {
-                        let max_magnitude = spectrum.iter().take(100).fold(0.0f32, |a, &b| a.max(b));
-                        nih_plug::nih_log!("FFT: max magnitude in first 100 bins: {} dB", max_magnitude);
+                        let max_magnitude =
+                            spectrum.iter().take(100).fold(0.0f32, |a, &b| a.max(b));
+                        nih_plug::nih_log!(
+                            "FFT: max magnitude in first 100 bins: {} dB",
+                            max_magnitude
+                        );
                     }
                 }
             }
 
             // Update the shared spectrum data for the UI
             // write() gets exclusive write access
-            if let Ok(mut spectrum_data) = self.spectrum_data.write() {
+            if let Ok(mut spectrum_data) = spectrum_data.write() {
                 // Copy the new spectrum into the shared buffer
                 *spectrum_data = spectrum;
             }

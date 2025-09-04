@@ -9,7 +9,7 @@ use editor::EditorInitFlags;
 use editor::PluginEditor;
 use nih_plug::prelude::*;
 use nih_plug_iced::{create_iced_editor, IcedState};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 // This is a shortened version of the gain example with most comments removed, check out
 // https://github.com/robbert-vdh/nih-plug/blob/master/plugins/examples/gain/src/lib.rs to get
@@ -20,6 +20,7 @@ struct PluginLearn {
     waveform_buffer: Arc<Mutex<buffer::WaveformBuffer>>,
     audio_processor: Option<Arc<Mutex<AudioProcessor>>>,
     iced_state: Arc<IcedState>,
+    spectrum_data: Arc<RwLock<Vec<f32>>>,
 }
 
 #[derive(Params)]
@@ -39,6 +40,7 @@ impl Default for PluginLearn {
             waveform_buffer: Arc::new(Mutex::new(buffer::WaveformBuffer::new())),
             audio_processor: None,
             iced_state: IcedState::from_size(800, 600),
+            spectrum_data: Arc::new(RwLock::new(vec![0.0; 1025])),
         }
     }
 }
@@ -157,7 +159,7 @@ impl Plugin for PluginLearn {
             let _target_gain = self.params.gain.value();
 
             // Process the buffer to collect PRE-GAIN samples for FFT
-            processor.process_buffer_pre_gain(buffer);
+            processor.process_buffer_pre_gain(buffer, self.spectrum_data.clone());
             drop(processor);
 
             // Now apply smoothed gain to the actual output (per-sample for smooth transition)
@@ -195,6 +197,7 @@ impl Plugin for PluginLearn {
         let init_flags = EditorInitFlags {
             audio_processor,
             params: self.params.clone(),
+            spectrum_data: self.spectrum_data.clone(),
         };
 
         create_iced_editor::<PluginEditor>(

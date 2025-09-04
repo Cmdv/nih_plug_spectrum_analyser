@@ -97,12 +97,13 @@ impl SpectrumView {
         if bins.len() < 2 {
             return;
         }
-        
+
         // Log spectrum data occasionally
         static mut DRAW_LOG_COUNTER: u32 = 0;
         unsafe {
             DRAW_LOG_COUNTER += 1;
-            if DRAW_LOG_COUNTER >= 600 {  // Log every ~10 seconds at 60fps
+            if DRAW_LOG_COUNTER >= 600 {
+                // Log every ~10 seconds at 60fps
                 DRAW_LOG_COUNTER = 0;
                 let max_val = bins.iter().take(100).fold(0.0f32, |a, &b| a.max(b));
                 nih_plug::nih_log!("Drawing spectrum, max value in first 100 bins: {}", max_val);

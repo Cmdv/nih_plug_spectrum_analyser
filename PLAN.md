@@ -368,7 +368,7 @@ const GRID: Color = Color::from_rgba(0.3, 0.3, 0.4, 0.3);
 ### Build and Install Plugin
 ```bash
 # Build the plugin
-cargo xtask bundle plugin_learn --release
+cargo xtask bundle plugin-learn --release
 
 # Install plugin to system CLAP directory (macOS)
 sudo cp -r ./target/bundled/plugin-learn.clap /Library/Audio/Plug-Ins/CLAP
@@ -384,9 +384,6 @@ NIH_LOG=/Users/cmdv/Library/Logs/Bitwig/nih.log ./Applications/Bitwig\ Studio.ap
 
 # Watch log file in real-time (in separate terminal)
 tail -f /Users/cmdv/Library/Logs/Bitwig/nih.log
-
-# Alternative: Watch Bitwig's own log
-tail -f /Users/cmdv/Library/Logs/Bitwig/BitwigStudio.log
 
 # Check for audio thread allocations
 cargo build --features assert_process_allocs
