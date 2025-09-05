@@ -9,7 +9,8 @@ use editor::EditorInitFlags;
 use editor::PluginEditor;
 use nih_plug::prelude::*;
 use nih_plug_iced::{create_iced_editor, IcedState};
-use std::sync::{Arc, Mutex, RwLock};
+use atomic_float::AtomicF32;
+use std::sync::{atomic::Ordering, Arc, Mutex, RwLock};
 
 // This is a shortened version of the gain example with most comments removed, check out
 // https://github.com/robbert-vdh/nih-plug/blob/master/plugins/examples/gain/src/lib.rs to get
@@ -21,6 +22,9 @@ struct PluginLearn {
     audio_processor: Option<Arc<Mutex<AudioProcessor>>>,
     iced_state: Arc<IcedState>,
     spectrum_data: Arc<RwLock<Vec<f32>>>,
+    /// Peak level tracking for the level meters (left, right)
+    peak_level_left: Arc<AtomicF32>,
+    peak_level_right: Arc<AtomicF32>,
 }
 
 #[derive(Params)]
@@ -41,6 +45,8 @@ impl Default for PluginLearn {
             audio_processor: None,
             iced_state: IcedState::from_size(800, 600),
             spectrum_data: Arc::new(RwLock::new(vec![0.0; 1025])),
+            peak_level_left: Arc::new(AtomicF32::new(util::MINUS_INFINITY_DB)),
+            peak_level_right: Arc::new(AtomicF32::new(util::MINUS_INFINITY_DB)),
         }
     }
 }
@@ -163,13 +169,32 @@ impl Plugin for PluginLearn {
             drop(processor);
 
             // Now apply smoothed gain to the actual output (per-sample for smooth transition)
-            for channel_samples in buffer.iter_samples() {
+            let mut peak_left = 0.0f32;
+            let mut peak_right = 0.0f32;
+            
+            for (_sample_idx, mut channel_samples) in buffer.iter_samples().enumerate() {
                 // Call next() for EACH sample - this is what makes gain changes smooth
                 let gain = self.params.gain.smoothed.next();
-                for sample in channel_samples {
+                
+                for (channel_idx, sample) in channel_samples.iter_mut().enumerate() {
                     *sample *= gain;
+                    
+                    // Track post-gain peak levels for meters
+                    let abs_sample = sample.abs();
+                    match channel_idx {
+                        0 => peak_left = peak_left.max(abs_sample), // Left channel
+                        1 => peak_right = peak_right.max(abs_sample), // Right channel
+                        _ => {} // Ignore additional channels
+                    }
                 }
             }
+
+            // Convert to dB and update atomic levels for the UI
+            let left_db = if peak_left > 0.0 { util::gain_to_db(peak_left) } else { util::MINUS_INFINITY_DB };
+            let right_db = if peak_right > 0.0 { util::gain_to_db(peak_right) } else { util::MINUS_INFINITY_DB };
+            
+            self.peak_level_left.store(left_db, Ordering::Relaxed);
+            self.peak_level_right.store(right_db, Ordering::Relaxed);
         }
         ProcessStatus::Normal
     }
@@ -198,6 +223,8 @@ impl Plugin for PluginLearn {
             audio_processor,
             params: self.params.clone(),
             spectrum_data: self.spectrum_data.clone(),
+            peak_level_left: self.peak_level_left.clone(),
+            peak_level_right: self.peak_level_right.clone(),
         };
 
         create_iced_editor::<PluginEditor>(

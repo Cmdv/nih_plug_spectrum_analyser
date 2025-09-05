@@ -1,5 +1,7 @@
+use crate::audio::constants;
+use crate::ui::AudioTheme;
 use nih_plug_iced::widget::canvas::{self, Frame, Geometry, Path, Program, Stroke};
-use nih_plug_iced::{mouse, Color, Point, Rectangle, Renderer, Size, Theme};
+use nih_plug_iced::{mouse, Point, Rectangle, Renderer, Size, Theme};
 use std::sync::{Arc, Mutex, RwLock};
 
 pub struct SpectrumView {
@@ -33,13 +35,23 @@ impl<Message> Program<Message, Theme> for SpectrumView {
 
         // Draw background
         let background = Path::rectangle(Point::ORIGIN, bounds.size());
-        frame.fill(&background, Color::from_rgb(0.08, 0.08, 0.12));
+        frame.fill(&background, AudioTheme::BACKGROUND_MAIN);
 
         // Draw grid
         self.draw_grid(&mut frame, bounds.size());
 
-        // Draw spectrum curve
-        self.draw_spectrum(&mut frame, bounds.size());
+        // Draw spectrum curve (with margins for labels)
+        let spectrum_area = Size::new(
+            bounds.width - AudioTheme::SPECTRUM_MARGIN_RIGHT, 
+            bounds.height - AudioTheme::SPECTRUM_MARGIN_BOTTOM
+        );
+        self.draw_spectrum(&mut frame, spectrum_area);
+
+        // Draw frequency labels (bottom)
+        self.draw_frequency_labels(&mut frame, bounds.size());
+
+        // Draw dB scale labels (right)
+        self.draw_db_labels(&mut frame, bounds.size());
 
         vec![frame.into_geometry()]
     }
@@ -128,9 +140,9 @@ impl SpectrumView {
     ) -> Point {
         // Logarithmic frequency mapping (like Pro-Q 3)
         // Map 20Hz to 20kHz logarithmically across the display
-        let min_freq = 20.0;
-        let max_freq = 20000.0;
-        let nyquist = 22050.0; // Half of 44.1kHz sample rate
+        let min_freq = constants::MIN_FREQUENCY;
+        let max_freq = constants::MAX_FREQUENCY;
+        let nyquist = constants::NYQUIST_FREQUENCY;
 
         // Calculate the frequency for this display point (logarithmic)
         let norm_pos = i as f32 / num_points as f32;
@@ -156,8 +168,8 @@ impl SpectrumView {
         // Apply A-weighting for perceptual accuracy (like Pro-Q 3)
         let db_value = Self::apply_a_weighting(freq, raw_db_value);
 
-        // Map dB range to screen coordinates
-        let normalised = ((db_value + 90.0) / 110.0).max(0.0).min(1.0);
+        // Map dB range to screen coordinates using audio constants
+        let normalised = constants::db_to_normalized(db_value);
 
         let x = (i as f32 / num_points as f32) * size.width;
         let y = size.height * (1.0 - normalised);
@@ -166,8 +178,9 @@ impl SpectrumView {
     }
 
     fn draw_grid(&self, frame: &mut Frame, size: Size) {
-        let grid_color = Color::from_rgba(0.3, 0.3, 0.4, 0.3);
-        let stroke = Stroke::default().with_width(0.5).with_color(grid_color);
+        let stroke = Stroke::default()
+            .with_width(AudioTheme::GRID_LINE_WIDTH)
+            .with_color(AudioTheme::GRID_LINE);
 
         // Horizontal grid lines for dB levels (every 10dB from 0 to -100)
         for i in 0..=10 {
@@ -212,8 +225,8 @@ impl SpectrumView {
         }
 
         // Apply smoothing with different attack/release times
-        let attack = 0.9; // Fast attack (higher = faster)
-        let release = 0.02; // Slow release (lower = slower)
+        let attack = constants::SPECTRUM_ATTACK; // Fast attack
+        let release = constants::SPECTRUM_RELEASE; // Slow release
         for i in 0..bins.len() {
             if bins[i] > smoothed[i] {
                 // Attack: follow quickly when louder
@@ -264,8 +277,8 @@ impl SpectrumView {
 
         // Draw the line
         let line_stroke = Stroke::default()
-            .with_width(0.5)
-            .with_color(Color::from_rgb(0.3, 1.0, 0.8));
+            .with_width(AudioTheme::GRID_LINE_WIDTH)
+            .with_color(AudioTheme::SPECTRUM_LINE);
         frame.stroke(&spectrum_path, line_stroke);
 
         // Create fill path (closed polygon) with same smooth curves
@@ -287,6 +300,61 @@ impl SpectrumView {
         let fill_path = fill_builder.build();
 
         // Fill with semi-transparent color
-        frame.fill(&fill_path, Color::from_rgba(0.3, 1.0, 0.8, 0.15));
+        frame.fill(&fill_path, AudioTheme::SPECTRUM_FILL);
+    }
+
+    /// Draw frequency labels at the bottom (Pro-Q style)
+    fn draw_frequency_labels(&self, frame: &mut Frame, size: Size) {
+        let label_y = size.height - AudioTheme::FREQUENCY_LABEL_HEIGHT;
+        let spectrum_width = size.width - AudioTheme::SPECTRUM_MARGIN_RIGHT;
+
+        for &(freq, _label) in constants::FREQUENCY_MARKERS {
+            // Convert frequency to logarithmic position using audio constants
+            let log_pos = constants::freq_to_log_position(freq);
+            let x = log_pos * spectrum_width;
+
+            // Draw tick mark
+            let tick_start = Point::new(x, label_y - AudioTheme::TICK_MARK_LENGTH);
+            let tick_end = Point::new(x, label_y - 3.0);
+            let tick_path = Path::line(tick_start, tick_end);
+            
+            let tick_stroke = Stroke::default()
+                .with_width(AudioTheme::TICK_MARK_WIDTH)
+                .with_color(AudioTheme::TEXT_SECONDARY);
+            frame.stroke(&tick_path, tick_stroke);
+
+            // TODO: Add text labels when text rendering becomes available
+            // For now, just the tick marks provide visual reference
+        }
+    }
+
+    /// Draw dB scale labels on the right side (Pro-Q style)
+    fn draw_db_labels(&self, frame: &mut Frame, size: Size) {
+        let label_x = size.width - AudioTheme::DB_LABEL_WIDTH;
+        let spectrum_height = size.height - AudioTheme::SPECTRUM_MARGIN_BOTTOM;
+
+        for &(db, _label) in constants::DB_MARKERS {
+            // Convert dB to y position using audio constants
+            let normalized = constants::db_to_normalized(db);
+            let y = spectrum_height * (1.0 - normalized);
+
+            // Draw tick mark
+            let tick_start = Point::new(label_x, y);
+            let tick_end = Point::new(label_x + AudioTheme::TICK_MARK_LENGTH, y);
+            let tick_path = Path::line(tick_start, tick_end);
+            
+            let tick_stroke = Stroke::default()
+                .with_width(AudioTheme::TICK_MARK_WIDTH)
+                .with_color(AudioTheme::TEXT_SECONDARY);
+            frame.stroke(&tick_path, tick_stroke);
+
+            // TODO: Add text labels when text rendering becomes available
+            // For now, just the tick marks provide visual reference
+        }
+
+        // Draw "dB" label indicator at the bottom right
+        let db_label_pos = Point::new(label_x, spectrum_height + 10.0);
+        let db_indicator = Path::circle(db_label_pos, 2.0);
+        frame.fill(&db_indicator, AudioTheme::TEXT_SECONDARY);
     }
 }
