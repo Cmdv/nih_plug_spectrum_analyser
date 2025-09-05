@@ -1,5 +1,5 @@
 use crate::constants::WAVEFORM_BUFFER_SIZE;
-use apodize::hanning_iter;
+use apodize::blackman_iter;
 use realfft::{num_complex::Complex32, RealFftPlanner, RealToComplex};
 use std::sync::Arc;
 
@@ -28,7 +28,7 @@ impl FftProcessor {
         let fft = planner.plan_fft_forward(size);
 
         // Pre-compute Hann window
-        let window: Vec<f32> = hanning_iter(size).map(|w| w as f32).collect();
+        let window: Vec<f32> = blackman_iter(size).map(|w| w as f32).collect();
 
         // Pre-allocate buffers
         let input_buffer = vec![0.0; size];
@@ -67,7 +67,8 @@ impl FftProcessor {
         for complex_sample in &self.output_buffer {
             let magnitude = (complex_sample.re * complex_sample.re
                 + complex_sample.im * complex_sample.im)
-                .sqrt();
+                .sqrt()
+                / (self.size as f32).sqrt();
 
             // Convert to decibels (with floor to avoid log(0))
             let db = 20.0 * (magnitude.max(1e-10).log10());

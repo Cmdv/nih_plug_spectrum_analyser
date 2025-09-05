@@ -74,21 +74,46 @@ impl AudioProcessor {
             // Run FFT on the samples to get frequency data
             let spectrum = self.fft_processor.process(&samples_for_fft);
 
-            // Log FFT data occasionally to check it's working
+            // Log FFT data occasionally to understand what we're getting
             static mut FFT_LOG_COUNTER: u32 = 0;
             unsafe {
                 FFT_LOG_COUNTER += 1;
-                if FFT_LOG_COUNTER >= 1000 {
-                    // Log every ~10 seconds at 100Hz
+                if FFT_LOG_COUNTER >= 500 {  // Log every 5 seconds
                     FFT_LOG_COUNTER = 0;
-                    if spectrum.len() > 10 {
-                        let max_magnitude =
-                            spectrum.iter().take(100).fold(0.0f32, |a, &b| a.max(b));
-                        nih_plug::nih_log!(
-                            "FFT: max magnitude in first 100 bins: {} dB",
-                            max_magnitude
-                        );
+                    
+                    nih_plug::nih_log!("=== FFT Data Analysis ===");
+                    nih_plug::nih_log!("Total bins: {}", spectrum.len());
+                    
+                    // Show first 10 bins (lowest frequencies)
+                    for i in 0..10 {
+                        if i < spectrum.len() {
+                            let raw_value = spectrum[i];
+                            let db_value = if raw_value > 0.0 {
+                                20.0 * raw_value.log10()
+                            } else {
+                                -100.0
+                            };
+                            nih_plug::nih_log!("Bin {}: raw={:.6}, dB={:.1}", i, raw_value, db_value);
+                        }
                     }
+                    
+                    // Find the loudest bin
+                    let mut max_value = 0.0;
+                    let mut max_bin = 0;
+                    for (i, &value) in spectrum.iter().enumerate() {
+                        if value > max_value {
+                            max_value = value;
+                            max_bin = i;
+                        }
+                    }
+                    
+                    let max_db = if max_value > 0.0 {
+                        20.0 * max_value.log10()
+                    } else {
+                        -100.0
+                    };
+                    
+                    nih_plug::nih_log!("Loudest: Bin {} = {:.6} ({:.1} dB)", max_bin, max_value, max_db);
                 }
             }
 

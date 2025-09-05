@@ -40,9 +40,7 @@ impl IcedEditor for PluginEditor {
         let editor = Self {
             audio_processor: initialization_flags.audio_processor,
             params: initialization_flags.params,
-            spectrum_view: SpectrumView {
-                frequency_bins: initialization_flags.spectrum_data,
-            },
+            spectrum_view: SpectrumView::new(initialization_flags.spectrum_data),
             context,
         };
 
