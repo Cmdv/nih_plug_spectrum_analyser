@@ -1,9 +1,9 @@
-use crate::constants::WAVEFORM_BUFFER_SIZE;
+use crate::audio::constants::WAVEFORM_BUFFER_SIZE;
 use apodize::blackman_iter;
 use realfft::{num_complex::Complex32, RealFftPlanner, RealToComplex};
 use std::sync::Arc;
 
-pub struct FftProcessor {
+pub struct FftEngine {
     // FFT planner and instance
     planner: RealFftPlanner<f32>,
     fft: Arc<dyn RealToComplex<f32>>,
@@ -19,7 +19,7 @@ pub struct FftProcessor {
     size: usize,
 }
 
-impl FftProcessor {
+impl FftEngine {
     pub fn new() -> Self {
         let size = WAVEFORM_BUFFER_SIZE;
 

@@ -1,27 +1,23 @@
 mod audio;
-mod constants;
 mod editor;
 mod ui;
 
-use crate::audio::buffer;
-use audio::processor::AudioProcessor;
+use crate::audio::sample_buffer_engine;
+use atomic_float::AtomicF32;
+use audio::audio_engine::AudioEngine;
 use editor::EditorInitFlags;
 use editor::PluginEditor;
 use nih_plug::prelude::*;
 use nih_plug_iced::{create_iced_editor, IcedState};
-use atomic_float::AtomicF32;
 use std::sync::{atomic::Ordering, Arc, Mutex, RwLock};
-
-// This is a shortened version of the gain example with most comments removed, check out
-// https://github.com/robbert-vdh/nih-plug/blob/master/plugins/examples/gain/src/lib.rs to get
-// started
 
 struct PluginLearn {
     params: Arc<PluginLearnParams>,
-    waveform_buffer: Arc<Mutex<buffer::WaveformBuffer>>,
-    audio_processor: Option<Arc<Mutex<AudioProcessor>>>,
+    sample_buffer_engine: Arc<Mutex<sample_buffer_engine::SampleBufferEngine>>,
+    audio_engine: Option<Arc<Mutex<AudioEngine>>>,
     iced_state: Arc<IcedState>,
     spectrum_data: Arc<RwLock<Vec<f32>>>,
+
     /// Peak level tracking for the level meters (left, right)
     peak_level_left: Arc<AtomicF32>,
     peak_level_right: Arc<AtomicF32>,
@@ -29,7 +25,7 @@ struct PluginLearn {
 
 #[derive(Params)]
 struct PluginLearnParams {
-    /// The parameter's ID is used to identify the parameter in the wrappred plugin API. As long as
+    /// The parameter's ID is used to identify the parameter in the wrapped plugin API. As long as
     /// these IDs remain constant, you can rename and reorder these fields as you wish. The
     /// parameters are exposed to the host in the same order they were defined. In this case, this
     /// gain parameter is stored as linear gain while the values are displayed in decibels.
@@ -41,8 +37,10 @@ impl Default for PluginLearn {
     fn default() -> Self {
         Self {
             params: Arc::new(PluginLearnParams::default()),
-            waveform_buffer: Arc::new(Mutex::new(buffer::WaveformBuffer::new())),
-            audio_processor: None,
+            sample_buffer_engine: Arc::new(Mutex::new(
+                sample_buffer_engine::SampleBufferEngine::new(),
+            )),
+            audio_engine: None,
             iced_state: IcedState::from_size(800, 600),
             spectrum_data: Arc::new(RwLock::new(vec![0.0; 1025])),
             peak_level_left: Arc::new(AtomicF32::new(util::MINUS_INFINITY_DB)),
@@ -137,8 +135,8 @@ impl Plugin for PluginLearn {
         // Resize buffers and perform other potentially expensive initialization operations here.
         // The `reset()` function is always called right after this function. You can remove this
         // function if you do not need it.
-        self.audio_processor = Some(Arc::new(Mutex::new(AudioProcessor::new(
-            self.waveform_buffer.clone(),
+        self.audio_engine = Some(Arc::new(Mutex::new(AudioEngine::new(
+            self.sample_buffer_engine.clone(),
             buffer_config.max_buffer_size as usize,
         ))));
 
@@ -157,7 +155,7 @@ impl Plugin for PluginLearn {
         _aux: &mut AuxiliaryBuffers,
         _context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
-        if let Some(processor) = &mut self.audio_processor {
+        if let Some(processor) = &mut self.audio_engine {
             // First, collect pre-gain audio for FFT analysis
             let mut processor = processor.lock().unwrap();
 
@@ -171,28 +169,36 @@ impl Plugin for PluginLearn {
             // Now apply smoothed gain to the actual output (per-sample for smooth transition)
             let mut peak_left = 0.0f32;
             let mut peak_right = 0.0f32;
-            
+
             for (_sample_idx, mut channel_samples) in buffer.iter_samples().enumerate() {
                 // Call next() for EACH sample - this is what makes gain changes smooth
                 let gain = self.params.gain.smoothed.next();
-                
+
                 for (channel_idx, sample) in channel_samples.iter_mut().enumerate() {
                     *sample *= gain;
-                    
+
                     // Track post-gain peak levels for meters
                     let abs_sample = sample.abs();
                     match channel_idx {
                         0 => peak_left = peak_left.max(abs_sample), // Left channel
                         1 => peak_right = peak_right.max(abs_sample), // Right channel
-                        _ => {} // Ignore additional channels
+                        _ => {}                                     // Ignore additional channels
                     }
                 }
             }
 
             // Convert to dB and update atomic levels for the UI
-            let left_db = if peak_left > 0.0 { util::gain_to_db(peak_left) } else { util::MINUS_INFINITY_DB };
-            let right_db = if peak_right > 0.0 { util::gain_to_db(peak_right) } else { util::MINUS_INFINITY_DB };
-            
+            let left_db = if peak_left > 0.0 {
+                util::gain_to_db(peak_left)
+            } else {
+                util::MINUS_INFINITY_DB
+            };
+            let right_db = if peak_right > 0.0 {
+                util::gain_to_db(peak_right)
+            } else {
+                util::MINUS_INFINITY_DB
+            };
+
             self.peak_level_left.store(left_db, Ordering::Relaxed);
             self.peak_level_right.store(right_db, Ordering::Relaxed);
         }
@@ -203,24 +209,24 @@ impl Plugin for PluginLearn {
         nih_plug::nih_log!("Editor requested");
 
         // Editor can be requested before initialize() is called, so we need to handle
-        // the case where audio_processor is None by creating one for the editor
-        let audio_processor = match &self.audio_processor {
+        // the case where audio_engine is None by creating one for the editor
+        let audio_engine = match &self.audio_engine {
             Some(processor) => {
-                nih_plug::nih_log!("Using existing audio_processor");
+                nih_plug::nih_log!("Using existing audio_engine");
                 processor.clone()
             }
             None => {
-                nih_plug::nih_log!("Creating new audio_processor for editor");
+                nih_plug::nih_log!("Creating new audio_engine for editor");
                 // Create audio processor for the editor if not initialized yet
-                Arc::new(Mutex::new(AudioProcessor::new(
-                    self.waveform_buffer.clone(),
+                Arc::new(Mutex::new(AudioEngine::new(
+                    self.sample_buffer_engine.clone(),
                     1024, // default buffer size
                 )))
             }
         };
 
         let init_flags = EditorInitFlags {
-            audio_processor,
+            audio_engine,
             params: self.params.clone(),
             spectrum_data: self.spectrum_data.clone(),
             peak_level_left: self.peak_level_left.clone(),

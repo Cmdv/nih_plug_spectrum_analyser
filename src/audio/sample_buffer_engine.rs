@@ -1,9 +1,9 @@
-use crate::constants::WAVEFORM_BUFFER_SIZE;
+use crate::audio::constants::WAVEFORM_BUFFER_SIZE;
 use triple_buffer::TripleBuffer;
 
 // How many samples to keep for visualisation
 
-pub struct WaveformBuffer {
+pub struct SampleBufferEngine {
     // Triple buffer for the lock-free communication
     // The inne Vec<f32> holds our audio samples
     producer: triple_buffer::Input<Vec<f32>>,
@@ -16,7 +16,7 @@ pub struct WaveformBuffer {
     write_position: usize,
 }
 
-impl WaveformBuffer {
+impl SampleBufferEngine {
     pub fn new() -> Self {
         // Create the triple buffer with initial empty data
         let buffer = vec![0.0; WAVEFORM_BUFFER_SIZE];

@@ -1,4 +1,3 @@
-pub mod knob;
 pub mod theme;
 
-pub use theme::AudioTheme;
+pub use theme::UITheme;

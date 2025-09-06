@@ -1,13 +1,17 @@
-use crate::audio::processor::AudioProcessor;
-use crate::ui::{SpectrumView, LevelMeter, GainKnob};
+use crate::audio::audio_engine::AudioEngine;
+use crate::audio::meter_engine::MeterEngine;
+use crate::audio::spectrum_engine::SpectrumEngine;
+use crate::ui::{GainKnobDisplay, MeterDisplay, SpectrumDisplay, UITheme};
+
 use crate::PluginLearnParams;
+
 use nih_plug::context::gui::GuiContext;
 use nih_plug_iced::executor::Default;
 use nih_plug_iced::futures::Subscription;
 use nih_plug_iced::widget::canvas::Canvas;
-use nih_plug_iced::widget::{container, row, column};
+use nih_plug_iced::widget::{column, container, row, text};
 use nih_plug_iced::widgets::ParamSlider;
-use nih_plug_iced::{Element, IcedEditor, Length, Renderer, Task, Theme};
+use nih_plug_iced::{alignment::Horizontal, Element, IcedEditor, Length, Renderer, Task, Theme};
 use std::sync::{Arc, Mutex, RwLock};
 
 #[derive(Debug, Clone)]
@@ -20,7 +24,7 @@ pub enum Message {
 
 #[derive(Clone)]
 pub struct EditorInitFlags {
-    pub audio_processor: Arc<Mutex<AudioProcessor>>,
+    pub audio_engine: Arc<Mutex<AudioEngine>>,
     pub params: Arc<PluginLearnParams>,
     pub spectrum_data: Arc<RwLock<Vec<f32>>>,
     pub peak_level_left: Arc<atomic_float::AtomicF32>,
@@ -28,11 +32,13 @@ pub struct EditorInitFlags {
 }
 
 pub struct PluginEditor {
-    audio_processor: Arc<Mutex<AudioProcessor>>,
+    audio_engine: Arc<Mutex<AudioEngine>>,
     params: Arc<PluginLearnParams>,
-    spectrum_view: SpectrumView,
-    level_meter: LevelMeter,
-    gain_knob: GainKnob,
+    spectrum_display: SpectrumDisplay,
+    spectrum_engine: Arc<Mutex<SpectrumEngine>>,
+    meter_engine: Arc<MeterEngine>,
+    meter_display: MeterDisplay,
+    knob_display: GainKnobDisplay,
     context: Arc<dyn GuiContext>,
 }
 
@@ -46,15 +52,25 @@ impl IcedEditor for PluginEditor {
         initialization_flags: Self::InitializationFlags,
         context: Arc<dyn GuiContext>,
     ) -> (Self, Task<Self::Message>) {
+        // Create meter processor to handle all meter audio processing
+        let meter_processor = Arc::new(MeterEngine::new(
+            initialization_flags.peak_level_left.clone(),
+            initialization_flags.peak_level_right.clone(),
+        ));
+
+        // Create spectrum engine to handle all spectrum audio processing
+        let spectrum_engine = Arc::new(Mutex::new(SpectrumEngine::new(
+            initialization_flags.spectrum_data.clone(),
+        )));
+
         let editor = Self {
-            audio_processor: initialization_flags.audio_processor,
+            audio_engine: initialization_flags.audio_engine,
             params: initialization_flags.params.clone(),
-            spectrum_view: SpectrumView::new(initialization_flags.spectrum_data),
-            level_meter: LevelMeter::new(
-                initialization_flags.peak_level_left,
-                initialization_flags.peak_level_right
-            ),
-            gain_knob: GainKnob::new(initialization_flags.params),
+            spectrum_display: SpectrumDisplay::new(initialization_flags.spectrum_data),
+            spectrum_engine,
+            meter_display: MeterDisplay::new(meter_processor.clone()),
+            meter_engine: meter_processor,
+            knob_display: GainKnobDisplay::new(initialization_flags.params),
             context,
         };
 
@@ -91,56 +107,62 @@ impl IcedEditor for PluginEditor {
     }
 
     fn view(&self) -> Element<'_, Self::Message, Self::Theme, Renderer> {
-        use crate::ui::AudioTheme;
-        
-        // Main spectrum analyzer (left side, Pro-Q style)
-        let spectrum = Canvas::new(&self.spectrum_view)
-            .width(Length::FillPortion(4)) // 80% width like Pro-Q
+        // Main spectrum analyzer - maximize space to eliminate dead area
+        let spectrum = Canvas::new(&self.spectrum_display)
+            .width(Length::FillPortion(6)) // More space for spectrum (85.7%)
             .height(Length::Fill);
 
-        // Right side panel with knob and meter (Pro-Q style)
+        // Right side panel with knob and meter
         let right_panel = column![
-            // Gain knob at the top right
+            // Gain knob at the top right - same width as meter
             container(
                 ParamSlider::new(&self.params.gain)
-                    .width(Length::Fixed(80.0))
-                    .height(Length::Fixed(80.0))
+                    .width(Length::Fixed(UITheme::METER_WIDTH))
+                    .height(Length::Fixed(UITheme::METER_WIDTH))
                     .map(Message::ParamUpdate)
             )
             .width(Length::Fill)
-            .style(container::dark)
-            .padding(10), // Simple uniform padding
-
-            // Level meter below the knob  
-            Canvas::new(&self.level_meter)
-                .width(Length::Fixed(60.0))
-                .height(Length::Fill)
+            .padding(UITheme::PADDING_SMALL),
+            // dB value display above meter
+            container(
+                text(format!("{:.1} dB", self.meter_engine.get_peak_hold_db()))
+                    .size(10.0)
+                    .color(UITheme::TEXT_SECONDARY)
+            )
+            .width(Length::Fill)
+            .align_x(Horizontal::Center)
+            .padding(UITheme::PADDING_SMALL),
+            // Level meter below the dB display
+            container(
+                Canvas::new(&self.meter_display)
+                    .width(Length::Fixed(UITheme::METER_WIDTH))
+                    .height(Length::Fill)
+            )
+            .width(Length::Fill)
+            .padding(UITheme::PADDING_SMALL)
         ]
-        .spacing(5);
+        .spacing(UITheme::PADDING_SMALL);
 
-        // Main layout (Pro-Q style: spectrum + right panel) with dark background
+        // Main layout - optimized for Pro-Q style appearance
         container(
             row![
-                // Spectrum analyzer (main area)
+                // Spectrum analyzer - takes all available space
                 container(spectrum)
-                    .padding(5) // Small padding around spectrum
-                    .width(Length::FillPortion(4))
-                    .style(container::dark),
-                    
-                // Right side controls
-                container(right_panel)
-                    .width(Length::FillPortion(1)) // 20% width
+                    .width(Length::Fill) // Take all remaining space
                     .height(Length::Fill)
-                    .padding(5) // Padding around right panel
-                    .style(container::dark)
+                    .style(UITheme::background_dark),
+                // Right side controls - compact fixed width
+                container(right_panel)
+                    .width(Length::Fixed(80.0)) // Fixed width: 60px content + padding
+                    .height(Length::Fill)
+                    .padding(5) // Small padding
+                    .style(UITheme::background_dark)
             ]
-            .spacing(0) // No gap between main areas
-            .width(Length::Fill)
-            .height(Length::Fill)
+            .spacing(0), // No gap between areas
         )
         .width(Length::Fill)
         .height(Length::Fill)
-        .style(container::dark) // Apply dark background to entire UI
+        .style(UITheme::background_dark) // Dark background
         .into()
     }
 

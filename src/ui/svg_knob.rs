@@ -1,4 +1,4 @@
-use crate::ui::AudioTheme;
+use crate::ui::UITheme;
 use nih_plug::prelude::*;
 use nih_plug_iced::widget::svg::{self, Svg};
 use nih_plug_iced::widget::{container, text, Column};
@@ -19,11 +19,11 @@ impl<'a> SvgKnob<'a> {
     /// Generate SVG content for the knob at current parameter value
     fn generate_knob_svg(&self) -> String {
         let gain_db = util::gain_to_db(self.param.value());
-        let normalized = AudioTheme::gain_db_to_normalized(gain_db);
-        
+        let normalized = UITheme::gain_db_to_normalized(gain_db);
+
         // Convert to rotation angle (Pro-Q style: -150° to +150°)
-        let angle_deg = AudioTheme::KNOB_MIN_ANGLE_DEG + 
-            (normalized * AudioTheme::KNOB_TOTAL_ROTATION_DEG);
+        let angle_deg =
+            UITheme::KNOB_MIN_ANGLE_DEG + (normalized * UITheme::KNOB_TOTAL_ROTATION_DEG);
 
         // SVG knob with Pro-Q styling
         format!(
@@ -47,7 +47,7 @@ impl<'a> SvgKnob<'a> {
             </svg>
             "#,
             angle_deg,
-            25.0 + normalized * 30.0  // Position dot along indicator bar
+            25.0 + normalized * 30.0 // Position dot along indicator bar
         )
     }
 
@@ -62,7 +62,7 @@ impl<'a> SvgKnob<'a> {
 
         text(text_content)
             .size(10)
-            .color(AudioTheme::TEXT_SECONDARY)
+            .color(UITheme::TEXT_SECONDARY)
             .into()
     }
 }
@@ -74,19 +74,20 @@ impl<'a> From<SvgKnob<'a>> for Element<'a, ParamMessage, Theme> {
             .push(
                 // SVG knob with mouse interaction
                 container(
-                    Svg::new(svg::Handle::from_memory(knob.generate_knob_svg().into_bytes()))
-                        .width(Length::Fixed(AudioTheme::KNOB_SIZE))
-                        .height(Length::Fixed(AudioTheme::KNOB_SIZE))
+                    Svg::new(svg::Handle::from_memory(
+                        knob.generate_knob_svg().into_bytes(),
+                    ))
+                    .width(Length::Fixed(UITheme::KNOB_SIZE))
+                    .height(Length::Fixed(UITheme::KNOB_SIZE)),
                 )
-                .center_x(Length::Fill)
-                // TODO: Add mouse interaction handlers here
-                // This is where we'd add .on_press(), .on_drag(), etc.
+                .center_x(Length::Fill), // TODO: Add mouse interaction handlers here
+                                         // This is where we'd add .on_press(), .on_drag(), etc.
             )
             .push(
                 // Value text below knob
                 container(knob.create_value_text())
                     .center_x(Length::Fill)
-                    .padding([5, 0, 0, 0])
+                    .padding([5, 0, 0, 0]),
             )
             .align_items(nih_plug_iced::Alignment::Center)
             .spacing(2)

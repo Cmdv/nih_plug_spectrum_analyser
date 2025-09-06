@@ -9,7 +9,7 @@ pub const NYQUIST_FREQUENCY: f32 = 22050.0;
 /// dB range for spectrum display
 pub const MAX_DB: f32 = 20.0;
 pub const MIN_DB: f32 = -100.0;
-pub const DB_RANGE: f32 = MAX_DB - MIN_DB;  // 120dB total range
+pub const DB_RANGE: f32 = MAX_DB - MIN_DB; // 120dB total range
 
 /// Gain parameter range
 pub const GAIN_MIN_DB: f32 = -30.0;
@@ -22,17 +22,20 @@ pub const METER_MIN_DB: f32 = -60.0;
 pub const METER_RANGE_DB: f32 = METER_MAX_DB - METER_MIN_DB; // 72dB range
 
 /// Smoothing factors for level meters (Pro-Q style)
-pub const METER_ATTACK: f32 = 0.8;   // Fast attack
-pub const METER_RELEASE: f32 = 0.05; // Slow release
+pub const METER_ATTACK: f32 = 0.8; // Fast attack
+pub const METER_RELEASE: f32 = 0.02; // Slow release
 
 /// Smoothing factors for spectrum display
-pub const SPECTRUM_ATTACK: f32 = 0.9;  // Very fast attack
+pub const SPECTRUM_ATTACK: f32 = 0.9; // Very fast attack
 pub const SPECTRUM_RELEASE: f32 = 0.02; // Very slow release
 
 /// Knob rotation range (Pro-Q style: 300 degrees total rotation)
 pub const KNOB_MIN_ANGLE_DEG: f32 = -150.0;
 pub const KNOB_MAX_ANGLE_DEG: f32 = 150.0;
 pub const KNOB_TOTAL_ROTATION_DEG: f32 = 300.0;
+
+pub const WAVEFORM_BUFFER_SIZE: usize = 4096;
+pub const MAX_BLOCK_SIZE: usize = 8192;
 
 // === HELPER FUNCTIONS ===
 
@@ -77,7 +80,7 @@ pub fn gain_db_to_knob_angle(gain_db: f32) -> f32 {
 /// Standard frequency markers for grid (Pro-Q style)
 pub const FREQUENCY_MARKERS: &[(f32, &str)] = &[
     (20.0, "20"),
-    (50.0, "50"), 
+    (50.0, "50"),
     (100.0, "100"),
     (200.0, "200"),
     (500.0, "500"),

@@ -1,31 +1,30 @@
 use nih_plug::buffer::Buffer;
 
-use crate::audio::buffer::WaveformBuffer;
-use crate::audio::fft::FftProcessor;
+use crate::audio::fft_engine::FftEngine;
+use crate::audio::sample_buffer_engine::SampleBufferEngine;
 use std::sync::{Arc, Mutex, RwLock};
 
-pub struct AudioProcessor {
+pub struct AudioEngine {
     // Stores the last 2048 audio samples in a lock-free triple buffer
     // Used as input for the FFT to generate frequency spectrum
-    waveform_buffer: Arc<Mutex<WaveformBuffer>>,
-
+    sample_buffer_engine: Arc<Mutex<SampleBufferEngine>>,
+    // Performs Fast Fourier Transform to convert audio samples to frequency data
+    // Takes 2048 time-domain samples, outputs 1025 frequency bins
+    fft_engine: FftEngine,
     // Temporary storage for converting stereo to mono within process_buffer()
     // Pre-allocated to avoid allocations in the audio thread (real-time constraint)
     mono_scratch: Vec<f32>,
-
-    // Performs Fast Fourier Transform to convert audio samples to frequency data
-    // Takes 2048 time-domain samples, outputs 1025 frequency bins
-    fft_processor: FftProcessor,
 }
 
-impl AudioProcessor {
-    pub fn new(waveform_buffer: Arc<Mutex<WaveformBuffer>>, max_buffer_size: usize) -> Self {
-        // FFT of N real samples produces N/2 + 1 complex frequency bins
-        // let fft_output_size = WAVEFORM_BUFFER_SIZE / 2 + 1;
+impl AudioEngine {
+    pub fn new(
+        sample_buffer_engine: Arc<Mutex<SampleBufferEngine>>,
+        max_buffer_size: usize,
+    ) -> Self {
         Self {
-            waveform_buffer,
+            sample_buffer_engine,
             mono_scratch: Vec::with_capacity(max_buffer_size), // Pre-allocate reasonable size
-            fft_processor: FftProcessor::new(),
+            fft_engine: FftEngine::new(),
         }
     }
 
@@ -61,7 +60,7 @@ impl AudioProcessor {
             self.mono_scratch.push(mono);
         }
 
-        if let Ok(mut buffer) = self.waveform_buffer.lock() {
+        if let Ok(mut buffer) = self.sample_buffer_engine.lock() {
             buffer.write_samples(&self.mono_scratch);
 
             // Get the latest samples for FFT processing
@@ -72,18 +71,19 @@ impl AudioProcessor {
             drop(buffer);
 
             // Run FFT on the samples to get frequency data
-            let spectrum = self.fft_processor.process(&samples_for_fft);
+            let spectrum = self.fft_engine.process(&samples_for_fft);
 
             // Log FFT data occasionally to understand what we're getting
             static mut FFT_LOG_COUNTER: u32 = 0;
             unsafe {
                 FFT_LOG_COUNTER += 1;
-                if FFT_LOG_COUNTER >= 500 {  // Log every 5 seconds
+                if FFT_LOG_COUNTER >= 500 {
+                    // Log every 5 seconds
                     FFT_LOG_COUNTER = 0;
-                    
+
                     nih_plug::nih_log!("=== FFT Data Analysis ===");
                     nih_plug::nih_log!("Total bins: {}", spectrum.len());
-                    
+
                     // Show first 10 bins (lowest frequencies)
                     for i in 0..10 {
                         if i < spectrum.len() {
@@ -93,10 +93,15 @@ impl AudioProcessor {
                             } else {
                                 -100.0
                             };
-                            nih_plug::nih_log!("Bin {}: raw={:.6}, dB={:.1}", i, raw_value, db_value);
+                            nih_plug::nih_log!(
+                                "Bin {}: raw={:.6}, dB={:.1}",
+                                i,
+                                raw_value,
+                                db_value
+                            );
                         }
                     }
-                    
+
                     // Find the loudest bin
                     let mut max_value = 0.0;
                     let mut max_bin = 0;
@@ -106,14 +111,19 @@ impl AudioProcessor {
                             max_bin = i;
                         }
                     }
-                    
+
                     let max_db = if max_value > 0.0 {
                         20.0 * max_value.log10()
                     } else {
                         -100.0
                     };
-                    
-                    nih_plug::nih_log!("Loudest: Bin {} = {:.6} ({:.1} dB)", max_bin, max_value, max_db);
+
+                    nih_plug::nih_log!(
+                        "Loudest: Bin {} = {:.6} ({:.1} dB)",
+                        max_bin,
+                        max_value,
+                        max_db
+                    );
                 }
             }
 
