@@ -1,19 +1,27 @@
 use crate::audio::constants;
-use crate::audio::spectrum_engine::SpectrumEngine;
+use crate::audio::spectrum_analyzer::SpectrumOutput;
 use crate::ui::UITheme;
+use atomic_float::AtomicF32;
 use nih_plug_iced::widget::canvas::{self, Frame, Geometry, Path, Program, Stroke};
 use nih_plug_iced::{mouse, Point, Rectangle, Renderer, Size, Theme};
-use std::sync::{Arc, RwLock};
+use std::sync::{atomic::Ordering, Arc};
 
+/// Pure spectrum display component - no processing logic
+/// Reads spectrum data from SpectrumOutput communication channel
 pub struct SpectrumDisplay {
-    // Spectrum processing engine (handles all audio logic)
-    spectrum_engine: Arc<std::sync::Mutex<SpectrumEngine>>,
+    /// Communication channel from audio thread
+    spectrum_output: SpectrumOutput,
+
+    /// Sample rate for frequency calculation
+    sample_rate: Arc<AtomicF32>,
 }
 
 impl SpectrumDisplay {
-    pub fn new(frequency_bins: Arc<RwLock<Vec<f32>>>) -> Self {
-        let spectrum_engine = Arc::new(std::sync::Mutex::new(SpectrumEngine::new(frequency_bins)));
-        Self { spectrum_engine }
+    pub fn new(spectrum_output: SpectrumOutput, sample_rate: Arc<AtomicF32>) -> Self {
+        Self {
+            spectrum_output,
+            sample_rate,
+        }
     }
 }
 
@@ -99,7 +107,7 @@ impl SpectrumDisplay {
         }
     }
 
-    /// Calculate display point using SpectrumEngine processing
+    /// Calculate display point with logarithmic frequency scaling and A-weighting
     fn calculate_spectrum_point_for_display(
         &self,
         i: usize,
@@ -107,10 +115,39 @@ impl SpectrumDisplay {
         bins: &[f32],
         size: Size,
     ) -> Point {
-        // Use engine's calculation method for consistency
-        let (_freq, db_value) = SpectrumEngine::calculate_spectrum_point(bins, i, num_points);
+        // Calculate frequency for this display point (logarithmic)
+        let sample_rate = self.sample_rate.load(Ordering::Relaxed);
+        let nyquist_frequency = sample_rate / 2.0;
 
-        // Map dB range to screen coordinates using audio constants
+        let min_freq = constants::MIN_FREQUENCY;
+        let max_freq = constants::MAX_FREQUENCY;
+
+        // Logarithmic frequency mapping (like Pro-Q 3)
+        let norm_pos = i as f32 / num_points as f32;
+        let freq = min_freq * (max_freq / min_freq as f32).powf(norm_pos);
+
+        // Convert frequency to bin index with interpolation
+        let bin_position = (freq / nyquist_frequency) * bins.len() as f32;
+        let bin_index = bin_position.floor() as usize;
+        let bin_fraction = bin_position.fract();
+
+        // Get interpolated dB value
+        let raw_db_value = if bin_index + 1 < bins.len() {
+            // Linear interpolation between two bins
+            let current_bin = bins[bin_index];
+            let next_bin = bins[bin_index + 1];
+            current_bin + (next_bin - current_bin) * bin_fraction
+        } else if bin_index < bins.len() {
+            bins[bin_index]
+        } else {
+            -100.0
+        };
+
+        // Apply A-weighting for perceptual accuracy (from spectrum_analyzer utilities)
+        use crate::audio::spectrum_analyzer::display_utils;
+        let db_value = display_utils::apply_a_weighting(freq, raw_db_value);
+
+        // Map dB range to screen coordinates
         let normalised = constants::db_to_normalized(db_value);
 
         let x = (i as f32 / num_points as f32) * size.width;
@@ -151,17 +188,11 @@ impl SpectrumDisplay {
     }
 
     fn draw_spectrum(&self, frame: &mut Frame, size: Size) {
-        // Update spectrum processing engine
-        if let Ok(mut engine) = self.spectrum_engine.lock() {
-            engine.update();
-        }
+        // READ ONLY - Get latest spectrum data from audio thread
+        let spectrum_data = self.spectrum_output.read();
 
-        // Get processed spectrum data
-        let smoothed_copy = if let Ok(engine) = self.spectrum_engine.lock() {
-            engine.get_spectrum_data()
-        } else {
-            return; // Lock failed, skip this frame
-        };
+        // Convert to Vec for compatibility with existing display code
+        let smoothed_copy: Vec<f32> = spectrum_data.to_vec();
 
         if smoothed_copy.len() < 2 {
             return;

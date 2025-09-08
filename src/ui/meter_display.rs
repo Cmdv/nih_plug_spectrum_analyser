@@ -1,11 +1,14 @@
-use crate::audio::constants;
-use crate::audio::meter_engine::MeterEngine;
+use crate::audio::meter_communication::MeterOutput;
 use crate::ui::UITheme;
 use nih_plug_iced::widget::canvas::{
     fill::Rule, gradient::Linear, Fill, Frame, Geometry, Gradient, Path, Program, Style,
 };
 use nih_plug_iced::{border::Radius, mouse, Color, Point, Rectangle, Renderer, Size, Theme};
-use std::sync::Arc;
+
+// Local constants for meter display
+const METER_MAX_DB: f32 = 12.0;
+const METER_MIN_DB: f32 = -60.0;
+const METER_RANGE_DB: f32 = METER_MAX_DB - METER_MIN_DB; // 72dB range
 
 #[derive(Clone, Copy)]
 enum Channel {
@@ -13,14 +16,16 @@ enum Channel {
     Right,
 }
 
+/// Pure meter display component - no processing logic
+/// Reads meter data from MeterOutput communication channel
 pub struct MeterDisplay {
-    // Meter processor handles all audio processing logic
-    pub meter_processor: Arc<MeterEngine>,
+    /// Communication channel from audio thread
+    meter_output: MeterOutput,
 }
 
 impl MeterDisplay {
-    pub fn new(meter_processor: Arc<MeterEngine>) -> Self {
-        Self { meter_processor }
+    pub fn new(meter_output: MeterOutput) -> Self {
+        Self { meter_output }
     }
 }
 
@@ -55,11 +60,12 @@ impl MeterDisplay {
     }
 
     fn draw_level_bars(&self, frame: &mut Frame, size: Size) {
-        // Update processor (processes smoothing, peak hold, etc.)
-        self.meter_processor.update();
+        // UPDATE - Process latest meter data from audio thread
+        // The MeterOutput handles smoothing and peak hold in the UI thread
+        self.meter_output.update();
 
         // Get smoothed levels for LED display
-        let (smooth_left, smooth_right) = self.meter_processor.get_smoothed_levels();
+        let (smooth_left, smooth_right) = self.meter_output.get_smoothed_levels();
 
         // Draw level bars with consistent gap
         let channel_gap = 1.0; // Same as LED gap
@@ -94,7 +100,7 @@ impl MeterDisplay {
         channel: Channel,
     ) {
         // Convert dB to 0-1 range using constants
-        let normalized_level = ((level_db - constants::METER_MIN_DB) / constants::METER_RANGE_DB)
+        let normalized_level = ((level_db - METER_MIN_DB) / METER_RANGE_DB)
             .max(0.0)
             .min(1.0);
 

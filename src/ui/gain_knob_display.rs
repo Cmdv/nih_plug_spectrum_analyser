@@ -1,4 +1,4 @@
-use crate::audio::constants;
+// No audio constants needed in this display component
 use nih_plug::prelude::*;
 use nih_plug_iced::widget::canvas::{Frame, Geometry, Path, Program, Stroke};
 use nih_plug_iced::{mouse, Color, Point, Rectangle, Renderer, Size, Theme};

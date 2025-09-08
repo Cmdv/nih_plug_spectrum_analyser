@@ -1,10 +1,9 @@
-use crate::audio::audio_engine::AudioEngine;
-use crate::audio::meter_engine::MeterEngine;
-use crate::audio::spectrum_engine::SpectrumEngine;
+use crate::audio::meter_communication::MeterOutput;
+use crate::audio::spectrum_analyzer::SpectrumOutput;
 use crate::ui::{GainKnobDisplay, MeterDisplay, SpectrumDisplay, UITheme};
-
 use crate::PluginLearnParams;
 
+use atomic_float::AtomicF32;
 use nih_plug::context::gui::GuiContext;
 use nih_plug_iced::executor::Default;
 use nih_plug_iced::futures::Subscription;
@@ -12,7 +11,7 @@ use nih_plug_iced::widget::canvas::Canvas;
 use nih_plug_iced::widget::{column, container, row, text};
 use nih_plug_iced::widgets::ParamSlider;
 use nih_plug_iced::{alignment::Horizontal, Element, IcedEditor, Length, Renderer, Task, Theme};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -22,23 +21,39 @@ pub enum Message {
     Tick,
 }
 
+/// Grouped UI data following Diopser pattern
+/// Contains all data needed for the editor UI thread
+#[derive(Clone)]
+pub struct EditorData {
+    /// PARAMETER ACCESS
+    pub params: Arc<PluginLearnParams>,
+
+    /// AUDIO STATE - Read-only from UI
+    pub sample_rate: Arc<AtomicF32>,
+
+    /// DISPLAY DATA - Separated communication channels
+    pub spectrum_output: SpectrumOutput,
+    pub meter_output: MeterOutput,
+}
+
 #[derive(Clone)]
 pub struct EditorInitFlags {
-    pub audio_engine: Arc<Mutex<AudioEngine>>,
     pub params: Arc<PluginLearnParams>,
-    pub spectrum_data: Arc<RwLock<Vec<f32>>>,
-    pub peak_level_left: Arc<atomic_float::AtomicF32>,
-    pub peak_level_right: Arc<atomic_float::AtomicF32>,
+    pub sample_rate: Arc<AtomicF32>,
+    pub spectrum_output: SpectrumOutput,
+    pub meter_output: MeterOutput,
 }
 
 pub struct PluginEditor {
-    audio_engine: Arc<Mutex<AudioEngine>>,
-    params: Arc<PluginLearnParams>,
+    /// EDITOR DATA - Grouped UI dependencies
+    editor_data: EditorData,
+
+    /// DISPLAY COMPONENTS - Pure rendering
     spectrum_display: SpectrumDisplay,
-    spectrum_engine: Arc<Mutex<SpectrumEngine>>,
-    meter_engine: Arc<MeterEngine>,
     meter_display: MeterDisplay,
     knob_display: GainKnobDisplay,
+
+    /// GUI CONTEXT
     context: Arc<dyn GuiContext>,
 }
 
@@ -52,25 +67,25 @@ impl IcedEditor for PluginEditor {
         initialization_flags: Self::InitializationFlags,
         context: Arc<dyn GuiContext>,
     ) -> (Self, Task<Self::Message>) {
-        // Create meter processor to handle all meter audio processing
-        let meter_processor = Arc::new(MeterEngine::new(
-            initialization_flags.peak_level_left.clone(),
-            initialization_flags.peak_level_right.clone(),
-        ));
-
-        // Create spectrum engine to handle all spectrum audio processing
-        let spectrum_engine = Arc::new(Mutex::new(SpectrumEngine::new(
-            initialization_flags.spectrum_data.clone(),
-        )));
+        // Create grouped editor data following Diopser pattern
+        let editor_data = EditorData {
+            params: initialization_flags.params.clone(),
+            sample_rate: initialization_flags.sample_rate,
+            spectrum_output: initialization_flags.spectrum_output,
+            meter_output: initialization_flags.meter_output,
+        };
 
         let editor = Self {
-            audio_engine: initialization_flags.audio_engine,
-            params: initialization_flags.params.clone(),
-            spectrum_display: SpectrumDisplay::new(initialization_flags.spectrum_data),
-            spectrum_engine,
-            meter_display: MeterDisplay::new(meter_processor.clone()),
-            meter_engine: meter_processor,
-            knob_display: GainKnobDisplay::new(initialization_flags.params),
+            // DISPLAY COMPONENTS - Pure rendering with new communication channels
+            spectrum_display: SpectrumDisplay::new(
+                editor_data.spectrum_output.clone(),
+                editor_data.sample_rate.clone(),
+            ),
+            meter_display: MeterDisplay::new(editor_data.meter_output.clone()),
+            knob_display: GainKnobDisplay::new(editor_data.params.clone()),
+
+            // GROUPED DATA
+            editor_data,
             context,
         };
 
@@ -116,7 +131,7 @@ impl IcedEditor for PluginEditor {
         let right_panel = column![
             // Gain knob at the top right - same width as meter
             container(
-                ParamSlider::new(&self.params.gain)
+                ParamSlider::new(&self.editor_data.params.gain)
                     .width(Length::Fixed(UITheme::METER_WIDTH))
                     .height(Length::Fixed(UITheme::METER_WIDTH))
                     .map(Message::ParamUpdate)
@@ -124,11 +139,16 @@ impl IcedEditor for PluginEditor {
             .width(Length::Fill)
             .padding(UITheme::PADDING_SMALL),
             // dB value display above meter
-            container(
-                text(format!("{:.1} dB", self.meter_engine.get_peak_hold_db()))
-                    .size(10.0)
-                    .color(UITheme::TEXT_SECONDARY)
-            )
+            container({
+                // Update meter processing before reading peak hold
+                self.editor_data.meter_output.update();
+                text(format!(
+                    "{:.1} dB",
+                    self.editor_data.meter_output.get_peak_hold_db()
+                ))
+                .size(10.0)
+                .color(UITheme::TEXT_SECONDARY)
+            })
             .width(Length::Fill)
             .align_x(Horizontal::Center)
             .padding(UITheme::PADDING_SMALL),

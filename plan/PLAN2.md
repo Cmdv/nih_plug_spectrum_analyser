@@ -225,28 +225,48 @@ All UI constants centralized in `AudioTheme`:
 4. **Canvas Limitations**: Canvas `Program` trait is for drawing only - no interaction
 5. **Theme Application**: Must apply `container::dark` to get dark backgrounds
 
-## 🚀 Session 9 Goals
+## 🚀 Session 9 Goals - Pro-Q 3 Style Improvements
 
-1. **Implement Circular Knob Widget**
-   - Full mouse interaction (drag to rotate)
-   - Visual feedback (hover states)
-   - Proper parameter binding
-   - Pro-Q style appearance
+**Reference**: Comparing plugin-learn (left) with FabFilter Pro-Q 3 (right) to match professional appearance
 
-2. **Add Text Rendering**
-   - Frequency labels on spectrum
-   - dB values on meters
-   - Gain value on knob
+### Priority Order:
 
-3. **Polish Visual Design**
-   - Fine-tune colors to match Pro-Q
-   - Add subtle animations
-   - Improve grid appearance
+1. **🎯 PRIORITY: Dead Space Elimination (#3)**
+   - Remove remaining gap on right side of plugin
+   - Ensure spectrum fills allocated space completely
+   - Match Pro-Q's edge-to-edge spectrum coverage
 
-4. **Optional Enhancements**
-   - Pre/post gain spectrum comparison
-   - Peak hold indicators on meters
-   - Preset system
+2. **📊 LED-Style Level Meters (#1)**
+   - Replace current meter with discrete LED segments
+   - Mimic Pro-Q's small rectangular LED indicators
+   - Remove meter labels, add current dB value display above meter
+
+3. **🎛️ Circular Gain Knob (#6)**
+   - Fix SVG knob to respond to circular mouse motion
+   - Replace square ParamSlider with proper rotary control
+   - Implement drag-to-rotate interaction from existing `svg_knob.rs`
+
+4. **📝 Spectrum Text Labels (#5)**
+   - Replace frequency tick marks with text values (20, 50, 100, 1k, etc.)
+   - Use Pro-Q's yellow color scheme for frequency labels
+   - Position text on canvas like y-axis labels
+
+5. **🎨 Consistent Background (#7)**
+   - Make all UI elements use spectrum's dark background color
+   - Remove any lighter/inconsistent background areas
+   - Match Pro-Q's uniform dark theme
+
+6. **📐 Grid Improvements (#4)**
+   - Move x-axis ticks from outside edge to canvas overlay
+   - Match y-axis tick positioning style
+   - Improve grid line consistency
+
+### Implementation Notes:
+
+- **svg_knob.rs exists** but needs mouse interaction implementation
+- **Text rendering** may require iced's text features or canvas text drawing
+- **LED meters** can use canvas with discrete rectangles
+- **Dead space** likely caused by layout proportions or container margins
 
 ## 📚 Code Patterns from nih_plug_iced
 
@@ -451,6 +471,116 @@ A fully functional gain plugin with Pro-Q quality visualization:
 - Cohesive dark theme
 - Proper parameter management
 - Thread-safe architecture
+
+---
+
+## 🔧 Architecture Refactoring Plan - Engine/Display Separation
+
+### Current Naming Issues:
+- Mixed audio processing and UI rendering logic
+- Confusing component names (`audio_processor`, `spectrum_view`, etc.)
+- Spectrum analysis logic embedded in UI code
+- Duplicated processing patterns
+
+### Proposed Engine/Display Pattern:
+
+**Audio Processing Engines (Pure Data Logic):**
+```rust
+// Core audio effects processing
+audio_engine: AudioEngine,
+
+// Level analysis (smoothing, peak hold, RMS)
+meter_engine: MeterEngine,  // ✅ COMPLETED
+
+// FFT analysis and frequency processing  
+spectrum_engine: SpectrumEngine,  // 🎯 NEXT: Extract from UI
+```
+
+**UI Display Components (Pure Presentation):**
+```rust
+// Renders spectrum curve, grid, labels
+spectrum_display: SpectrumDisplay,
+
+// Renders LED meter segments
+meter_display: MeterDisplay,
+
+// Renders circular knob widget
+knob_display: KnobDisplay,
+```
+
+### Implementation Priority:
+
+1. **🎯 NEXT: Spectrum Engine Extraction**
+   - Create `audio/spectrum_engine.rs` following successful MeterProcessor pattern
+   - Move FFT processing and frequency analysis from `ui/spectrum.rs`
+   - Extract `SpectrumEngine` with clean API like MeterProcessor:
+     - `new()` - Initialize with shared data references
+     - `update()` - Process FFT analysis (called from UI update loop)
+     - `get_spectrum_data()` - Return processed frequency data for rendering
+   - UI component becomes pure display: `SpectrumDisplay`
+   - Separate frequency analysis from rendering completely
+
+2. **Future: Audio Engine Refinement**
+   - Rename `audio_processor` → `audio_engine`
+   - Clarify core effects processing role
+
+3. **Future: Display Component Cleanup**
+   - Rename UI components with `_display` suffix
+   - Ensure pure rendering responsibility
+
+### Benefits:
+- **Clear Separation**: Audio logic vs UI rendering
+- **Reusable Components**: Engines can be used by multiple displays
+- **Easier Testing**: Test audio logic independently
+- **Better Naming**: Purpose is obvious from component names
+
+### ✅ Successful MeterProcessor Pattern (Template for Future Engines):
+
+```rust
+// audio/meter_processor.rs - Pure audio processing logic
+pub struct MeterProcessor {
+    // Thread-safe data references
+    peak_level_left: Arc<AtomicF32>,
+    peak_level_right: Arc<AtomicF32>,
+    
+    // Internal processing state
+    smoothed_left: f32,
+    smoothed_right: f32,
+    peak_hold_value: f32,
+    silence_counter: u32,
+}
+
+impl MeterProcessor {
+    pub fn new(peak_left: Arc<AtomicF32>, peak_right: Arc<AtomicF32>) -> Self { /* */ }
+    pub fn update(&mut self) { /* All smoothing, peak hold logic */ }
+    pub fn get_smoothed_levels(&self) -> (f32, f32) { /* Clean API */ }
+    pub fn get_peak_hold_db(&self) -> f32 { /* Clean API */ }
+}
+
+// ui/meter.rs - Pure rendering logic
+pub struct LevelMeter {
+    meter_processor: Arc<MeterProcessor>, // Reference to engine
+}
+
+impl<Message> Program<Message, Theme> for LevelMeter {
+    fn draw(&self, /* ... */) -> Vec<Geometry> {
+        // 1. Update processing engine
+        self.meter_processor.update();
+        
+        // 2. Get processed data via clean API
+        let (left, right) = self.meter_processor.get_smoothed_levels();
+        
+        // 3. Pure rendering - no audio logic
+        self.draw_level_bars(frame, size, left, right);
+    }
+}
+```
+
+### Key Patterns for Engine Extraction:
+- **Arc<T>** for shared ownership between audio thread and UI
+- **Clean APIs**: Simple getter methods, no internal state exposure
+- **Update Pattern**: Engine handles all processing in `update()` method
+- **Separation**: UI calls engine methods but never implements audio logic
 
 ---
 

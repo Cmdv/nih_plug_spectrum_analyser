@@ -290,45 +290,97 @@ src/
 - **Parameter Updates**: Will use `GuiContext` and `ParamSetter` for bidirectional parameter communication
 - **Spectrum Data**: Planning to pass FFT data from processor to UI via shared Arc
 
-### Session 7 (Current)
-- ✅ **BREAKTHROUGH**: Fixed editor window not appearing issue
-  - Problem: `audio_processor` was `None` when `editor()` method called
-  - Solution: Create dummy AudioProcessor when needed for editor initialization
-  - Result: Plugin now shows window icon and opens editor successfully
-- ✅ **Canvas rendering working**: 
-  - Dark blue background renders properly
-  - Bright green test line displays correctly
-  - Canvas Program trait implementation is functional
-- ✅ **IcedEditor trait implementation complete**:
-  - Fixed `IcedEditor` vs `Application` trait confusion
-  - Implemented proper `new()`, `context()`, `update()`, `view()`, `theme()` methods
-  - Added `EditorInitFlags` struct with Clone derive for proper initialization
-  - Removed old `Editor` trait implementation (handled by `create_iced_editor`)
-- ✅ **Architecture working end-to-end**:
-  - Plugin loads in Bitwig (CLAP format)
-  - Automatic editor window opening (normal behavior)
-  - UI thread and audio thread separation functioning
-  - Ready for actual spectrum analyzer implementation
+### Session 8-9: Layout System & Dead Space Fixes ✅ COMPLETED
 
-### Key Learning Points
-- NIH-plug editor lifecycle: `editor()` can be called before `initialize()`
-- `create_iced_editor()` handles the `Editor` trait wrapper automatically
-- Canvas Program trait requires proper bounds and geometry handling
-- CLAP plugins auto-opening editor windows is standard behavior
+## Iced Layout System (Like CSS Flexbox)
 
-### Current Issue
-**FFT data not reaching UI**: FFT is computing spectrum data (32-36 dB) but UI shows 0 values.
-Problem: Editor creates separate AudioProcessor from the one that processes audio.
-Solution: Share `spectrum_data` between AudioProcessor instances at plugin level.
+Yes, you're absolutely right! Iced's layout works very much like **CSS Flexbox**:
 
-### Next Tasks  
-1. Fix spectrum data sharing between audio thread and UI thread
-2. Verify spectrum visualization displays real audio data
-3. Implement pre/post gain spectrum comparison
-4. Add padding/margins around spectrum display
-5. Optimize spectrum curve smoothing and interpolation
-6. Implement gain knob widget for parameter control
-7. Add frequency and dB labels to grid
+### Our Current Layout Structure:
+```
+┌─────────────────────────────────────────────────────────────┐
+│ container() - ROOT FLEX CONTAINER                           │
+│ .style(container::dark) - Dark background                   │
+│                                                             │
+│  ┌─────────────────────────────────────────────────────┐    │
+│  │ row![] - HORIZONTAL FLEXBOX (flex-direction: row)  │    │
+│  │ .spacing(0) - No gap between flex items            │    │
+│  │                                                     │    │
+│  │ ┌──────────────────────────┐ ┌─────────────────┐   │    │
+│  │ │ SPECTRUM CONTAINER       │ │ RIGHT PANEL     │   │    │
+│  │ │ .width(Length::Fill)     │ │ .width(80px)    │   │    │
+│  │ │ flex: 1 (takes remain-   │ │ flex: 0 0 80px  │   │    │
+│  │ │ ing space after 80px)    │ │ (fixed width)   │   │    │
+│  │ │                          │ │                 │   │    │
+│  │ │ ┌──────────────────────┐ │ │ ┌─────────────┐ │   │    │
+│  │ │ │ Canvas<SpectrumView> │ │ │ │ column![]   │ │   │    │
+│  │ │ │ (Spectrum Analyzer)  │ │ │ │ VERTICAL    │ │   │    │
+│  │ │ │                      │ │ │ │ FLEXBOX     │ │   │    │
+│  │ │ └──────────────────────┘ │ │ │             │ │   │    │
+│  │ └──────────────────────────┘ │ │ ┌─────────┐ │ │   │    │
+│  │                              │ │ │ Knob    │ │ │   │    │
+│  │                              │ │ │ (60×60) │ │ │   │    │
+│  │                              │ │ └─────────┘ │ │   │    │
+│  │                              │ │ ┌─────────┐ │ │   │    │
+│  │                              │ │ │ Meter   │ │ │   │    │
+│  │                              │ │ │ (60×∞)  │ │ │   │    │
+│  │                              │ │ └─────────┘ │ │   │    │
+│  │                              │ └─────────────┘ │   │    │
+│  │                              └─────────────────┘   │    │
+│  └─────────────────────────────────────────────────────┘    │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### CSS Flexbox Equivalent:
+```css
+.root-container {
+  display: flex;
+  width: 100%;
+  height: 100vh;
+  background: dark;
+}
+
+.main-row {
+  display: flex;
+  flex-direction: row;
+  gap: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.spectrum-container {
+  flex: 1; /* Takes all remaining space */
+  /* Same as: flex-grow: 1, flex-shrink: 1, flex-basis: auto */
+}
+
+.right-panel {
+  flex: 0 0 80px; /* Fixed 80px width, no grow/shrink */
+  display: flex;
+  flex-direction: column;
+}
+
+.knob { width: 60px; height: 60px; }
+.meter { width: 60px; flex: 1; } /* Takes remaining vertical space */
+```
+
+### Key Layout Concepts We Used:
+
+1. **`Length::Fill` = `flex: 1`** - Takes all remaining space
+2. **`Length::Fixed(80.0)` = `flex: 0 0 80px`** - Fixed size, no flex
+3. **`row![]` = `flex-direction: row`** - Horizontal layout
+4. **`column![]` = `flex-direction: column`** - Vertical layout
+5. **`.spacing(0)` = `gap: 0`** - No space between flex items
+
+### Why Our Fix Worked:
+```
+BEFORE: FillPortion(6) : FillPortion(1) = 85.7% : 14.3%
+  ↓ Problem: 14.3% was too much for 60px knob + 60px meter
+
+AFTER: Fill : Fixed(80px) = (100% - 80px) : 80px  
+  ✅ Solution: Spectrum gets ALL remaining space, right panel exactly sized
+```
+
+This is exactly like CSS Flexbox - very intuitive once you map the concepts!
 
 ## 🎨 Visual Design Ideas
 

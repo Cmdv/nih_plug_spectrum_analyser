@@ -25,6 +25,7 @@ triple_buffer = "8.0"
 atomic_float = "0.1"
 realfft = "3.3"
 apodize = "1.0"
+dasp = "0.11.0"
 
 # Uncomment the below line to disable the on-by-default VST3 feature to remove
 # the GPL compatibility requirement
