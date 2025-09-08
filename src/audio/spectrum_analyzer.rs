@@ -1,5 +1,6 @@
 use crate::audio::constants;
-use apodize::blackman_iter;
+use core::f32::consts::PI;
+use libm::cosf;
 use nih_plug::prelude::*;
 use realfft::{num_complex::Complex32, RealFftPlanner, RealToComplex};
 use std::sync::Arc;
@@ -49,13 +50,52 @@ impl SpectrumOutput {
     }
 }
 
+/// Generate Hann window coefficients for spectral analysis
+/// The Hann window (also called Hanning) provides good frequency resolution
+/// with -32dB sidelobe suppression.
+/// Returns a vector of window coefficients that will be multiplied with audio samples.
+#[must_use]
+fn generate_hann_window(window_size: usize) -> Vec<f32> {
+    // Pre-allocate vector for efficiency
+    let mut window = Vec::with_capacity(window_size);
+
+    // Convert window size to float once to avoid repeated casting
+    let window_size_f32 = window_size as f32;
+
+    // Generate each window coefficient
+    for i in 0..window_size {
+        // Calculate normalized position in window (0 to 1)
+        // This represents how far through the window we are
+        let position = i as f32 / window_size_f32;
+
+        // Calculate the cosine term for this position
+        // cos(2πi/N) creates a cosine wave over the window length
+        let cos_term = cosf(2.0 * PI * position);
+
+        // Apply Hann formula: 0.5 * (1 - cos(2πi/N))
+        // This creates a raised cosine shape:
+        // - Starts at 0 (when cos = 1, result = 0)
+        // - Peaks at 1 in the middle (when cos = -1, result = 1)
+        // - Returns to 0 at the end (when cos = 1 again)
+        let coefficient = 0.5 * (1.0 - cos_term);
+
+        window.push(coefficient);
+    }
+
+    window
+}
+
 /// Continuously computes frequency spectrum and sends to [`SpectrumOutput`] (audio thread writes to this)
 pub struct SpectrumAnalyzer {
     /// FFT processing engine
     fft_processor: Arc<dyn RealToComplex<f32>>,
 
-    /// Pre-computed Blackman window for spectral leakage reduction
+    /// Pre-computed Hann window for spectral leakage reduction
     window_function: Vec<f32>,
+
+    /// Window coherent gain for amplitude compensation
+    /// Hann window reduces amplitude by ~50%, this value compensates for it
+    window_coherent_gain: f32,
 
     /// Input buffer for windowed samples (time domain)
     time_domain_buffer: Vec<f32>,
@@ -87,13 +127,21 @@ impl SpectrumAnalyzer {
 
         // Pre-compute Blackman window for better frequency resolution
         // Blackman window provides good side-lobe suppression for spectrum analysis
-        let window_function: Vec<f32> = blackman_iter(SPECTRUM_WINDOW_SIZE)
-            .map(|w| w as f32)
-            .collect();
+        let window_function: Vec<f32> = generate_hann_window(SPECTRUM_WINDOW_SIZE);
+        // Calculate actual coherent gain (sum of coefficients / size)
+        let coherent_gain: f32 = window_function.iter().sum::<f32>() / SPECTRUM_WINDOW_SIZE as f32;
+
+        nih_plug::nih_log!("Window coherent gain: {:.4}", coherent_gain);
+
+        // TODO: Implement dynamic window size calculation based on sample rate
+        // spectrum-analyzer uses: window_size = sample_rate / frequency_resolution
+        // This gives better frequency resolution at different sample rates
+        // Example: 48000 Hz / 23.4 Hz = 2048 samples (current fixed size)
 
         let analyzer = Self {
             fft_processor,
             window_function,
+            window_coherent_gain: coherent_gain,
             time_domain_buffer: vec![0.0; SPECTRUM_WINDOW_SIZE],
             frequency_domain_buffer: vec![Complex32::new(0.0, 0.0); SPECTRUM_BINS],
             spectrum_result: [SPECTRUM_FLOOR_DB; SPECTRUM_BINS],

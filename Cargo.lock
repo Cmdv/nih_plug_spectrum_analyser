@@ -2264,6 +2264,7 @@ dependencies = [
  "apodize",
  "atomic_float",
  "dasp",
+ "libm",
  "nih_plug",
  "nih_plug_iced",
  "realfft",
