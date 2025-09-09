@@ -11,7 +11,7 @@ const METER_MIN_DB: f32 = -60.0;
 const METER_RANGE_DB: f32 = METER_MAX_DB - METER_MIN_DB; // 72dB range
 
 #[derive(Clone, Copy)]
-enum Channel {
+pub enum Channel {
     Left,
     Right,
 }
@@ -99,112 +99,166 @@ impl MeterDisplay {
         level_db: f32,
         channel: Channel,
     ) {
-        // Convert dB to 0-1 range using constants
-        let normalized_level = ((level_db - METER_MIN_DB) / METER_RANGE_DB)
-            .max(0.0)
-            .min(1.0);
-
-        // LED configuration
         let led_count = 110;
         let led_gap = 1.0;
 
-        // Calculate LED height to fill container
-        let available_height = size.height;
-        let total_gap_space = (led_count - 1) as f32 * led_gap;
-        let led_height = (available_height - total_gap_space) / led_count as f32;
+        let leds = generate_meter_leds(position, size, level_db, channel, led_count, led_gap);
 
-        let active_leds = (normalized_level * led_count as f32).round() as usize;
-
-        // Create gradient for the entire meter
-        let gradient = Linear::new(
+        let gradient = create_meter_gradient(
             Point::new(position.x, position.y + size.height), // Bottom
             Point::new(position.x, position.y),               // Top
-        )
-        .add_stop(
-            0.0,
-            Color::from_rgb(44.0 / 255.0, 67.0 / 255.0, 27.0 / 255.0),
-        ) // Green #2c431b
-        .add_stop(
-            0.98,
-            Color::from_rgb(214.0 / 255.0, 198.0 / 255.0, 82.0 / 255.0),
-        ) // Yellow #d6c652
-        .add_stop(
-            1.0,
-            Color::from_rgb(255.0 / 255.0, 77.0 / 255.0, 26.0 / 255.0),
-        ); // Red for top 2 LEDs
+        );
 
         let gradient_fill = Fill {
             style: Style::Gradient(Gradient::Linear(gradient)),
             rule: Rule::NonZero,
         };
 
-        // Draw each LED from bottom up
-        for i in 0..led_count {
-            if i >= active_leds {
-                // Draw inactive LEDs with dark background
-                let led_y =
-                    position.y + size.height - (i as f32 * (led_height + led_gap) + led_height);
-                let led_position = Point::new(position.x, led_y);
-                let led_size = Size::new(size.width, led_height);
-
-                let radius = led_height / 2.0;
-                let led_path = match channel {
-                    Channel::Left => Path::rounded_rectangle(
-                        led_position,
-                        led_size,
-                        Radius {
-                            top_left: radius,
-                            top_right: 0.0,
-                            bottom_right: 0.0,
-                            bottom_left: radius,
-                        },
-                    ),
-                    Channel::Right => Path::rounded_rectangle(
-                        led_position,
-                        led_size,
-                        Radius {
-                            top_left: 0.0,
-                            top_right: radius,
-                            bottom_right: radius,
-                            bottom_left: 0.0,
-                        },
-                    ),
-                };
-
-                frame.fill(&led_path, UITheme::METER_BACKGROUND);
+        for led in leds {
+            if led.is_active {
+                frame.fill(&led.path, gradient_fill.clone());
             } else {
-                // Draw active LEDs with gradient
-                let led_y =
-                    position.y + size.height - (i as f32 * (led_height + led_gap) + led_height);
-                let led_position = Point::new(position.x, led_y);
-                let led_size = Size::new(size.width, led_height);
-
-                let radius = led_height / 2.0;
-                let led_path = match channel {
-                    Channel::Left => Path::rounded_rectangle(
-                        led_position,
-                        led_size,
-                        Radius {
-                            top_left: radius,
-                            top_right: 0.0,
-                            bottom_right: 0.0,
-                            bottom_left: radius,
-                        },
-                    ),
-                    Channel::Right => Path::rounded_rectangle(
-                        led_position,
-                        led_size,
-                        Radius {
-                            top_left: 0.0,
-                            top_right: radius,
-                            bottom_right: radius,
-                            bottom_left: 0.0,
-                        },
-                    ),
-                };
-
-                frame.fill(&led_path, gradient_fill.clone());
+                frame.fill(&led.path, UITheme::METER_BACKGROUND);
             }
         }
     }
+}
+
+/// Convert dB level to normalized 0-1 range for meter display
+///
+/// Maps the meter's dB range to a 0.0-1.0 scale for visual representation.
+/// Values below the minimum are clamped to 0, above maximum to 1.
+pub fn normalize_db_level(level_db: f32) -> f32 {
+    ((level_db - METER_MIN_DB) / METER_RANGE_DB)
+        .max(0.0)
+        .min(1.0)
+}
+
+/// Calculate LED dimensions and spacing for a given container size
+///
+/// Determines the optimal LED height and positioning to fill the available
+/// space while maintaining consistent gaps between LEDs.
+/// Returns (led_height, led_gap, total_leds).
+pub fn calculate_led_layout(
+    container_height: f32,
+    led_count: usize,
+    led_gap: f32,
+) -> (f32, f32, usize) {
+    let total_gap_space = (led_count - 1) as f32 * led_gap;
+    let led_height = (container_height - total_gap_space) / led_count as f32;
+    (led_height, led_gap, led_count)
+}
+
+/// Calculate number of active LEDs based on normalized level
+///
+/// Converts a 0.0-1.0 level to the corresponding number of LEDs that should
+/// be illuminated, with proper rounding for smooth visual transitions.
+pub fn calculate_active_leds(normalized_level: f32, total_leds: usize) -> usize {
+    (normalized_level * total_leds as f32).round() as usize
+}
+
+/// Calculate LED position for a specific LED index
+///
+/// Returns the Y position of an LED given its index, with LEDs numbered
+/// from bottom (0) to top. Accounts for LED height and gap spacing.
+pub fn calculate_led_position(
+    led_index: usize,
+    container_position: Point,
+    container_height: f32,
+    led_height: f32,
+    led_gap: f32,
+) -> Point {
+    let led_y = container_position.y + container_height
+        - (led_index as f32 * (led_height + led_gap) + led_height);
+    Point::new(container_position.x, led_y)
+}
+
+/// Create gradient for meter LED visualization
+///
+/// Generates a linear gradient from green (bottom) through yellow to red (top),
+/// matching professional audio meter color schemes like Pro-Q.
+pub fn create_meter_gradient(start_point: Point, end_point: Point) -> Linear {
+    Linear::new(start_point, end_point)
+        .add_stop(
+            0.0,
+            Color::from_rgb(44.0 / 255.0, 67.0 / 255.0, 27.0 / 255.0),
+        ) // Green
+        .add_stop(
+            0.98,
+            Color::from_rgb(214.0 / 255.0, 198.0 / 255.0, 82.0 / 255.0),
+        ) // Yellow
+        .add_stop(
+            1.0,
+            Color::from_rgb(255.0 / 255.0, 77.0 / 255.0, 26.0 / 255.0),
+        ) // Red
+}
+
+/// Create rounded rectangle path for channel-specific LED shape
+///
+/// Generates the appropriate rounded rectangle path for left or right channel LEDs.
+/// Left channel has rounded left corners, right channel has rounded right corners.
+pub fn create_channel_led_path(position: Point, size: Size, radius: f32, channel: Channel) -> Path {
+    match channel {
+        Channel::Left => Path::rounded_rectangle(
+            position,
+            size,
+            Radius {
+                top_left: radius,
+                top_right: 0.0,
+                bottom_right: 0.0,
+                bottom_left: radius,
+            },
+        ),
+        Channel::Right => Path::rounded_rectangle(
+            position,
+            size,
+            Radius {
+                top_left: 0.0,
+                top_right: radius,
+                bottom_right: radius,
+                bottom_left: 0.0,
+            },
+        ),
+    }
+}
+
+/// Generate LED rendering data for a complete meter bar
+///
+/// Creates all the data needed to render a meter bar including positions,
+/// sizes, and active/inactive states for each LED. Returns a vector of
+/// LED rendering information.
+pub struct LedInfo {
+    pub is_active: bool,
+    pub path: Path,
+}
+
+pub fn generate_meter_leds(
+    container_position: Point,
+    container_size: Size,
+    level_db: f32,
+    channel: Channel,
+    led_count: usize,
+    led_gap: f32,
+) -> Vec<LedInfo> {
+    let normalized_level = normalize_db_level(level_db);
+    let (led_height, _, _) = calculate_led_layout(container_size.height, led_count, led_gap);
+    let active_leds = calculate_active_leds(normalized_level, led_count);
+    let radius = led_height / 2.0;
+
+    (0..led_count)
+        .map(|i| {
+            let position = calculate_led_position(
+                i,
+                container_position,
+                container_size.height,
+                led_height,
+                led_gap,
+            );
+            let size = Size::new(container_size.width, led_height);
+            let is_active = i < active_leds;
+            let path = create_channel_led_path(position, size, radius, channel);
+
+            LedInfo { is_active, path }
+        })
+        .collect()
 }

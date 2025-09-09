@@ -3,7 +3,7 @@ mod editor;
 mod ui;
 
 use atomic_float::AtomicF32;
-use audio::audio_engine::AudioEngine;
+use audio::audio_engine;
 use audio::meter_communication::{create_meter_channels, MeterInput, MeterOutput};
 use audio::spectrum_analyzer::{SpectrumAnalyzer, SpectrumOutput};
 use editor::EditorInitFlags;
@@ -15,9 +15,6 @@ use std::sync::{atomic::Ordering, Arc};
 struct PluginLearn {
     // CORE PLUGIN COMPONENTS
     params: Arc<PluginLearnParams>,
-
-    // AUDIO PROCESSING - Direct ownership, no Option<> wrapper
-    audio_engine: AudioEngine,
 
     // SHARED STATE - Minimal
     sample_rate: Arc<AtomicF32>,
@@ -50,10 +47,7 @@ impl Default for PluginLearn {
 
         Self {
             // CORE COMPONENTS
-            params: Arc::new(PluginLearnParams::new(sample_rate.clone())),
-
-            // AUDIO PROCESSING - Initialize directly (no Option<>)
-            audio_engine: AudioEngine::new(),
+            params: Arc::new(create_plugin_params(sample_rate.clone())),
 
             // SHARED STATE
             sample_rate,
@@ -70,39 +64,40 @@ impl Default for PluginLearn {
     }
 }
 
-impl PluginLearnParams {
-    pub fn new(_sample_rate: Arc<AtomicF32>) -> Self {
-        Self {
-            // This gain is stored as linear gain. NIH-plug comes with useful conversion functions
-            // to treat these kinds of parameters as if we were dealing with decibels. Storing this
-            // as decibels is easier to work with, but requires a conversion for every sample.
-            gain: FloatParam::new(
-                "Gain",
-                util::db_to_gain(0.0),
-                FloatRange::Skewed {
-                    min: util::db_to_gain(-30.0),
-                    max: util::db_to_gain(30.0),
-                    // This makes the range appear as if it was linear when displaying the values as
-                    // decibels
-                    factor: FloatRange::gain_skew_factor(-30.0, 30.0),
-                },
-            )
-            // Because the gain parameter is stored as linear gain instead of storing the value as
-            // decibels, we need logarithmic smoothing (reduced from 50ms to 5ms for faster response)
-            .with_smoother(SmoothingStyle::Logarithmic(5.0))
-            .with_unit(" dB")
-            // There are many predefined formatters we can use here. If the gain was stored as
-            // decibels instead of as a linear gain value, we could have also used the
-            // `.with_step_size(0.1)` function to get internal rounding.
-            .with_value_to_string(formatters::v2s_f32_gain_to_db(2))
-            .with_string_to_value(formatters::s2v_f32_gain_to_db()),
-        }
+/// Create plugin parameters with default gain configuration
+/// 
+/// Configures a logarithmic gain parameter with:
+/// - Range: -30dB to +30dB (stored as linear gain for efficiency)
+/// - 5ms smoothing to prevent artifacts during parameter changes
+/// - Skewed range for linear dB display behavior
+/// - Professional dB formatting for the UI
+fn create_plugin_params(_sample_rate: Arc<AtomicF32>) -> PluginLearnParams {
+    PluginLearnParams {
+        // Gain stored as linear value but displayed/controlled in dB
+        // This avoids per-sample dB conversion in the audio loop
+        gain: FloatParam::new(
+            "Gain",
+            util::db_to_gain(0.0), // 0dB = unity gain (1.0)
+            FloatRange::Skewed {
+                min: util::db_to_gain(-30.0),  // -30dB minimum
+                max: util::db_to_gain(30.0),   // +30dB maximum
+                // Makes the parameter feel linear when displayed as dB
+                factor: FloatRange::gain_skew_factor(-30.0, 30.0),
+            },
+        )
+        // Fast logarithmic smoothing (5ms) for responsive feel
+        // Logarithmic smoothing works better with gain parameters
+        .with_smoother(SmoothingStyle::Logarithmic(5.0))
+        .with_unit(" dB")
+        // Format internal linear gain as dB for display (2 decimal places)
+        .with_value_to_string(formatters::v2s_f32_gain_to_db(2))
+        .with_string_to_value(formatters::s2v_f32_gain_to_db()),
     }
 }
 
 impl Default for PluginLearnParams {
     fn default() -> Self {
-        Self::new(Arc::new(AtomicF32::new(44100.0)))
+        create_plugin_params(Arc::new(AtomicF32::new(44100.0)))
     }
 }
 
@@ -183,7 +178,7 @@ impl Plugin for PluginLearn {
         self.spectrum_analyzer.process(buffer, sample_rate);
 
         // 2. Apply audio effects (core gain processing)
-        self.audio_engine.process(buffer, &self.params.gain);
+        audio_engine::apply_gain(buffer, &self.params.gain);
 
         // 3. Post-gain meter analysis (analyze output signal)
         self.meter_input.update_peaks(buffer);

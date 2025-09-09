@@ -57,6 +57,84 @@ pub struct PluginEditor {
     context: Arc<dyn GuiContext>,
 }
 
+/// Create spectrum analyzer canvas widget
+pub fn create_spectrum_canvas(spectrum_display: &SpectrumDisplay) -> Canvas<&SpectrumDisplay, Message> {
+    Canvas::new(spectrum_display)
+        .width(Length::FillPortion(6))
+        .height(Length::Fill)
+}
+
+/// Create gain parameter slider widget
+pub fn create_gain_slider(params: &Arc<PluginLearnParams>) -> Element<'_, Message, Theme, Renderer> {
+    ParamSlider::new(&params.gain)
+        .width(Length::Fixed(UITheme::METER_WIDTH))
+        .height(Length::Fixed(UITheme::METER_WIDTH))
+        .map(Message::ParamUpdate)
+        .into()
+}
+
+/// Create dB value display text widget
+pub fn create_db_display(peak_hold_db: f32) -> Element<'static, Message, Theme, Renderer> {
+    text(format!("{:.1} dB", peak_hold_db))
+        .size(10.0)
+        .color(UITheme::TEXT_SECONDARY)
+        .into()
+}
+
+/// Create level meter canvas widget
+pub fn create_meter_canvas(meter_display: &MeterDisplay) -> Canvas<&MeterDisplay, Message> {
+    Canvas::new(meter_display)
+        .width(Length::Fixed(UITheme::METER_WIDTH))
+        .height(Length::Fill)
+}
+
+/// Create right panel layout with knob and meter
+pub fn create_right_panel<'a>(
+    gain_slider: Element<'a, Message, Theme, Renderer>,
+    db_display: Element<'a, Message, Theme, Renderer>,
+    meter_canvas: Canvas<&'a MeterDisplay, Message>,
+) -> Element<'a, Message, Theme, Renderer> {
+    column![
+        container(gain_slider)
+            .width(Length::Fill)
+            .padding(UITheme::PADDING_SMALL),
+        container(db_display)
+            .width(Length::Fill)
+            .align_x(Horizontal::Center)
+            .padding(UITheme::PADDING_SMALL),
+        container(meter_canvas)
+            .width(Length::Fill)
+            .padding(UITheme::PADDING_SMALL)
+    ]
+    .spacing(UITheme::PADDING_SMALL)
+    .into()
+}
+
+/// Create main layout container
+pub fn create_main_layout<'a>(
+    spectrum_canvas: Canvas<&'a SpectrumDisplay, Message>,
+    right_panel: Element<'a, Message, Theme, Renderer>,
+) -> Element<'a, Message, Theme, Renderer> {
+    container(
+        row![
+            container(spectrum_canvas)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .style(UITheme::background_dark),
+            container(right_panel)
+                .width(Length::Fixed(80.0))
+                .height(Length::Fill)
+                .padding(5)
+                .style(UITheme::background_dark)
+        ]
+        .spacing(0),
+    )
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .style(UITheme::background_dark)
+    .into()
+}
+
 impl IcedEditor for PluginEditor {
     type Executor = Default;
     type Message = Message;
@@ -122,68 +200,18 @@ impl IcedEditor for PluginEditor {
     }
 
     fn view(&self) -> Element<'_, Self::Message, Self::Theme, Renderer> {
-        // Main spectrum analyzer - maximize space to eliminate dead area
-        let spectrum = Canvas::new(&self.spectrum_display)
-            .width(Length::FillPortion(6)) // More space for spectrum (85.7%)
-            .height(Length::Fill);
+        // Update meter processing before reading peak hold
+        self.editor_data.meter_output.update();
 
-        // Right side panel with knob and meter
-        let right_panel = column![
-            // Gain knob at the top right - same width as meter
-            container(
-                ParamSlider::new(&self.editor_data.params.gain)
-                    .width(Length::Fixed(UITheme::METER_WIDTH))
-                    .height(Length::Fixed(UITheme::METER_WIDTH))
-                    .map(Message::ParamUpdate)
-            )
-            .width(Length::Fill)
-            .padding(UITheme::PADDING_SMALL),
-            // dB value display above meter
-            container({
-                // Update meter processing before reading peak hold
-                self.editor_data.meter_output.update();
-                text(format!(
-                    "{:.1} dB",
-                    self.editor_data.meter_output.get_peak_hold_db()
-                ))
-                .size(10.0)
-                .color(UITheme::TEXT_SECONDARY)
-            })
-            .width(Length::Fill)
-            .align_x(Horizontal::Center)
-            .padding(UITheme::PADDING_SMALL),
-            // Level meter below the dB display
-            container(
-                Canvas::new(&self.meter_display)
-                    .width(Length::Fixed(UITheme::METER_WIDTH))
-                    .height(Length::Fill)
-            )
-            .width(Length::Fill)
-            .padding(UITheme::PADDING_SMALL)
-        ]
-        .spacing(UITheme::PADDING_SMALL);
+        // Create widgets using pure functions
+        let spectrum_canvas = create_spectrum_canvas(&self.spectrum_display);
+        let gain_slider = create_gain_slider(&self.editor_data.params);
+        let db_display = create_db_display(self.editor_data.meter_output.get_peak_hold_db());
+        let meter_canvas = create_meter_canvas(&self.meter_display);
 
-        // Main layout - optimized for Pro-Q style appearance
-        container(
-            row![
-                // Spectrum analyzer - takes all available space
-                container(spectrum)
-                    .width(Length::Fill) // Take all remaining space
-                    .height(Length::Fill)
-                    .style(UITheme::background_dark),
-                // Right side controls - compact fixed width
-                container(right_panel)
-                    .width(Length::Fixed(80.0)) // Fixed width: 60px content + padding
-                    .height(Length::Fill)
-                    .padding(5) // Small padding
-                    .style(UITheme::background_dark)
-            ]
-            .spacing(0), // No gap between areas
-        )
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .style(UITheme::background_dark) // Dark background
-        .into()
+        // Compose layout using pure functions
+        let right_panel = create_right_panel(gain_slider, db_display, meter_canvas);
+        create_main_layout(spectrum_canvas, right_panel)
     }
 
     fn theme(&self) -> Self::Theme {

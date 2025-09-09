@@ -2,11 +2,6 @@ use atomic_float::AtomicF32;
 use nih_plug::prelude::*;
 use std::sync::{atomic::Ordering, Arc};
 
-/// Peak meter range (Pro-Q style: +12 to -60 dB)
-pub const METER_MAX_DB: f32 = 12.0;
-pub const METER_MIN_DB: f32 = -60.0;
-pub const METER_RANGE_DB: f32 = METER_MAX_DB - METER_MIN_DB; // 72dB range
-
 /// Smoothing factors for level meters (Pro-Q style behavior)
 /// These values are calibrated to match professional meter behavior
 const METER_ATTACK: f32 = 0.3; // Moderate attack (not too jumpy)
@@ -31,41 +26,7 @@ impl MeterInput {
     /// Update peak levels from audio buffer (called from audio thread)
     /// Must be real-time safe - no allocations or locks
     pub fn update_peaks(&self, buffer: &Buffer) {
-        let mut left_peak = util::MINUS_INFINITY_DB;
-        let mut right_peak = util::MINUS_INFINITY_DB;
-
-        let num_channels = buffer.channels();
-        if num_channels == 0 {
-            return;
-        }
-
-        // Get immutable access to channel slices
-        let channel_slices = buffer.as_slice_immutable();
-
-        // Calculate peak for left channel (or mono)
-        if num_channels >= 1 {
-            let left_channel = &channel_slices[0];
-            for &sample in left_channel.iter() {
-                let sample_db = util::gain_to_db(sample.abs());
-                if sample_db > left_peak {
-                    left_peak = sample_db;
-                }
-            }
-        }
-
-        // Calculate peak for right channel
-        if num_channels >= 2 {
-            let right_channel = &channel_slices[1];
-            for &sample in right_channel.iter() {
-                let sample_db = util::gain_to_db(sample.abs());
-                if sample_db > right_peak {
-                    right_peak = sample_db;
-                }
-            }
-        } else {
-            // Mono: use left channel for both
-            right_peak = left_peak;
-        }
+        let (left_peak, right_peak) = calculate_peak_levels(buffer);
 
         // Update atomic values (lock-free communication to UI thread)
         self.peak_left.store(left_peak, Ordering::Relaxed);
@@ -132,8 +93,8 @@ impl MeterOutput {
             // Update peak hold behavior
             self.update_peak_hold(&mut state, left_db, right_db);
 
-            // Silence detection disabled - let natural release handle it
-            // self.update_silence_detection(&mut state);
+            // Silence detection for faster decay
+            self.update_silence_detection(&mut state);
         }
     }
 
@@ -152,15 +113,6 @@ impl MeterOutput {
             state.peak_hold_value
         } else {
             util::MINUS_INFINITY_DB
-        }
-    }
-
-    /// Get peak hold values for individual channels
-    pub fn get_peak_hold_channels(&self) -> (f32, f32) {
-        if let Ok(state) = self.state.lock() {
-            (state.peak_hold_left, state.peak_hold_right)
-        } else {
-            (util::MINUS_INFINITY_DB, util::MINUS_INFINITY_DB)
         }
     }
 
@@ -275,35 +227,48 @@ pub fn create_meter_channels() -> (MeterInput, MeterOutput) {
     (meter_input, meter_output)
 }
 
-/// Utility functions for level meter display
-pub mod display_utils {
-    use super::*;
+/// Calculate peak levels from audio buffer
+///
+/// Analyzes all channels in the buffer to find peak levels in dB.
+/// For mono sources, both left and right will have the same value.
+/// For stereo sources, returns independent left and right peaks.
+/// Returns (left_peak_db, right_peak_db) tuple.
+pub fn calculate_peak_levels(buffer: &Buffer) -> (f32, f32) {
+    let mut left_peak = util::MINUS_INFINITY_DB;
+    let mut right_peak = util::MINUS_INFINITY_DB;
 
-    /// Convert dB level to normalized meter position (0.0 to 1.0)
-    /// Used by meter display components
-    pub fn level_to_normalized(level_db: f32) -> f32 {
-        ((level_db - METER_MIN_DB) / METER_RANGE_DB)
-            .max(0.0)
-            .min(1.0)
+    let num_channels = buffer.channels();
+    if num_channels == 0 {
+        return (util::MINUS_INFINITY_DB, util::MINUS_INFINITY_DB);
     }
 
-    /// Get color for meter level (Pro-Q style: green → yellow → red)
-    /// Returns (r, g, b) values in 0.0-1.0 range
-    pub fn get_meter_color(level_db: f32) -> (f32, f32, f32) {
-        if level_db < -20.0 {
-            // Green zone: -60 to -20 dB
-            (0.0, 0.8, 0.0) // Green
-        } else if level_db < -6.0 {
-            // Yellow zone: -20 to -6 dB
-            let blend = (level_db + 20.0) / 14.0; // 0.0 to 1.0
-            (0.8 * blend, 0.8, 0.0) // Green to Yellow
-        } else if level_db < 0.0 {
-            // Orange zone: -6 to 0 dB
-            let blend = (level_db + 6.0) / 6.0; // 0.0 to 1.0
-            (0.8, 0.8 * (1.0 - blend), 0.0) // Yellow to Orange
-        } else {
-            // Red zone: 0+ dB (clipping warning)
-            (1.0, 0.0, 0.0) // Red
+    // Get immutable access to channel slices
+    let channel_slices = buffer.as_slice_immutable();
+
+    // Calculate peak for left channel (or mono)
+    if num_channels >= 1 {
+        let left_channel = &channel_slices[0];
+        for &sample in left_channel.iter() {
+            let sample_db = util::gain_to_db(sample.abs());
+            if sample_db > left_peak {
+                left_peak = sample_db;
+            }
         }
     }
+
+    // Calculate peak for right channel
+    if num_channels >= 2 {
+        let right_channel = &channel_slices[1];
+        for &sample in right_channel.iter() {
+            let sample_db = util::gain_to_db(sample.abs());
+            if sample_db > right_peak {
+                right_peak = sample_db;
+            }
+        }
+    } else {
+        // Mono: use left channel for both
+        right_peak = left_peak;
+    }
+
+    (left_peak, right_peak)
 }

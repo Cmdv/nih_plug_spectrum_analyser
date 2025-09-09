@@ -6,9 +6,6 @@
 pub const MIN_FREQUENCY: f32 = 20.0;
 pub const MAX_FREQUENCY: f32 = 20000.0;
 
-// === SHARED BUFFER SIZES ===
-/// Audio buffer size used by multiple processing engines
-pub const WAVEFORM_BUFFER_SIZE: usize = 4096;
 
 // === SHARED DISPLAY RANGE ===
 /// dB range for spectrum display (-100 to +20 dB)

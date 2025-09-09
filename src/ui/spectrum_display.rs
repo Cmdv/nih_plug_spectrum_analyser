@@ -1,12 +1,12 @@
 use crate::audio::constants;
-use crate::audio::spectrum_analyzer::SpectrumOutput;
+use crate::audio::spectrum_analyzer::{apply_a_weighting, SpectrumOutput};
 use crate::ui::UITheme;
 use atomic_float::AtomicF32;
 use nih_plug_iced::widget::canvas::{self, Frame, Geometry, Path, Program, Stroke};
 use nih_plug_iced::{mouse, Point, Rectangle, Renderer, Size, Theme};
 use std::sync::{atomic::Ordering, Arc};
 
-/// Pure spectrum display component - no processing logic
+/// Spectrum display component - no processing logic
 /// Reads spectrum data from SpectrumOutput communication channel
 pub struct SpectrumDisplay {
     /// Communication channel from audio thread
@@ -78,32 +78,9 @@ impl SpectrumDisplay {
             path_builder.move_to(points[0]);
         }
 
-        for i in 1..points.len() - 1 {
-            let current = points[i];
-            let next = points[i + 1];
-
-            // Adaptive smoothing: more in low frequencies (left side), less in high frequencies (right side)
-            let progress = i as f32 / points.len() as f32;
-            let adaptive_smoothing = if progress < 0.3 {
-                // Low frequencies (20Hz - ~2kHz): maximum smoothing
-                base_smoothing * 1.5
-            } else if progress < 0.7 {
-                // Mid frequencies (~2kHz - ~8kHz): normal smoothing
-                base_smoothing
-            } else {
-                // High frequencies (>8kHz): minimal smoothing for detail
-                base_smoothing * 0.4
-            };
-
-            // Calculate control points for smooth curve
-            let control_point1 = Point::new(
-                current.x + (next.x - current.x) * adaptive_smoothing,
-                current.y,
-            );
-            let control_point2 =
-                Point::new(next.x - (next.x - current.x) * adaptive_smoothing, next.y);
-
-            path_builder.bezier_curve_to(control_point1, control_point2, next);
+        let bezier_segments = generate_bezier_segments(points, base_smoothing);
+        for (control1, control2, end_point) in bezier_segments {
+            path_builder.bezier_curve_to(control1, control2, end_point);
         }
     }
 
@@ -115,45 +92,8 @@ impl SpectrumDisplay {
         bins: &[f32],
         size: Size,
     ) -> Point {
-        // Calculate frequency for this display point (logarithmic)
         let sample_rate = self.sample_rate.load(Ordering::Relaxed);
-        let nyquist_frequency = sample_rate / 2.0;
-
-        let min_freq = constants::MIN_FREQUENCY;
-        let max_freq = constants::MAX_FREQUENCY;
-
-        // Logarithmic frequency mapping (like Pro-Q 3)
-        let norm_pos = i as f32 / num_points as f32;
-        let freq = min_freq * (max_freq / min_freq as f32).powf(norm_pos);
-
-        // Convert frequency to bin index with interpolation
-        let bin_position = (freq / nyquist_frequency) * bins.len() as f32;
-        let bin_index = bin_position.floor() as usize;
-        let bin_fraction = bin_position.fract();
-
-        // Get interpolated dB value
-        let raw_db_value = if bin_index + 1 < bins.len() {
-            // Linear interpolation between two bins
-            let current_bin = bins[bin_index];
-            let next_bin = bins[bin_index + 1];
-            current_bin + (next_bin - current_bin) * bin_fraction
-        } else if bin_index < bins.len() {
-            bins[bin_index]
-        } else {
-            -100.0
-        };
-
-        // Apply A-weighting for perceptual accuracy (from spectrum_analyzer utilities)
-        use crate::audio::spectrum_analyzer::display_utils;
-        let db_value = display_utils::apply_a_weighting(freq, raw_db_value);
-
-        // Map dB range to screen coordinates
-        let normalised = constants::db_to_normalized(db_value);
-
-        let x = (i as f32 / num_points as f32) * size.width;
-        let y = size.height * (1.0 - normalised);
-
-        Point::new(x, y)
+        calculate_single_display_point(bins, sample_rate, size, i, num_points)
     }
 
     fn draw_grid(&self, frame: &mut Frame, size: Size) {
@@ -165,24 +105,17 @@ impl SpectrumDisplay {
         let spectrum_width = size.width - UITheme::SPECTRUM_MARGIN_RIGHT;
         let spectrum_height = size.height - UITheme::SPECTRUM_MARGIN_BOTTOM;
 
-        // Horizontal grid lines for dB levels (every 10dB from 0 to -100)
-        for i in 0..=10 {
-            let db = -(i as f32 * 10.0);
-            let normalized = constants::db_to_normalized(db);
-            let y = spectrum_height * (1.0 - normalized);
-            // Grid lines span only the spectrum area
-            let path = Path::line(Point::new(0.0, y), Point::new(spectrum_width, y));
+        // Draw horizontal grid lines using pure function
+        let db_grid_lines = generate_db_grid_lines(spectrum_width, spectrum_height);
+        for grid_line in db_grid_lines {
+            let path = Path::line(grid_line.start, grid_line.end);
             frame.stroke(&path, stroke.clone());
         }
 
-        // Vertical grid lines for frequency markers (logarithmic)
-        for &(freq, _label) in constants::FREQUENCY_MARKERS {
-            // Use the same logarithmic positioning as labels
-            let log_pos = constants::freq_to_log_position(freq);
-            let x = log_pos * spectrum_width;
-
-            // Grid lines span only the spectrum area
-            let path = Path::line(Point::new(x, 0.0), Point::new(x, spectrum_height));
+        // Draw vertical grid lines using pure function
+        let frequency_grid_lines = generate_frequency_grid_lines(spectrum_width, spectrum_height);
+        for grid_line in frequency_grid_lines {
+            let path = Path::line(grid_line.start, grid_line.end);
             frame.stroke(&path, stroke.clone());
         }
     }
@@ -255,56 +188,262 @@ impl SpectrumDisplay {
         let label_y = size.height - UITheme::FREQUENCY_LABEL_HEIGHT;
         let spectrum_width = size.width - UITheme::SPECTRUM_MARGIN_RIGHT;
 
-        for &(freq, _label) in constants::FREQUENCY_MARKERS {
-            // Convert frequency to logarithmic position using audio constants
-            let log_pos = constants::freq_to_log_position(freq);
-            let x = log_pos * spectrum_width;
+        let tick_stroke = Stroke::default()
+            .with_width(UITheme::TICK_MARK_WIDTH)
+            .with_color(UITheme::TEXT_SECONDARY);
 
-            // Draw tick mark
-            let tick_start = Point::new(x, label_y - UITheme::TICK_MARK_LENGTH);
-            let tick_end = Point::new(x, label_y - 3.0);
-            let tick_path = Path::line(tick_start, tick_end);
-
-            let tick_stroke = Stroke::default()
-                .with_width(UITheme::TICK_MARK_WIDTH)
-                .with_color(UITheme::TEXT_SECONDARY);
-            frame.stroke(&tick_path, tick_stroke);
-
-            // TODO: Add text labels when text rendering becomes available
-            // For now, just the tick marks provide visual reference
+        // Generate and draw tick marks using pure function
+        let tick_marks = generate_frequency_tick_marks(spectrum_width, label_y);
+        for tick_mark in tick_marks {
+            let tick_path = Path::line(tick_mark.start, tick_mark.end);
+            frame.stroke(&tick_path, tick_stroke.clone());
         }
+
+        // TODO: Add text labels when text rendering becomes available
+        // For now, just the tick marks provide visual reference
     }
 
     /// Draw dB scale labels on the right side (Pro-Q style)
     fn draw_db_labels(&self, frame: &mut Frame, size: Size) {
         let spectrum_height = size.height - UITheme::SPECTRUM_MARGIN_BOTTOM;
-
-        // Draw tick marks at the very right edge (no margin)
         let tick_start_x = size.width - UITheme::TICK_MARK_LENGTH;
         let tick_end_x = size.width;
 
-        for &(db, _label) in constants::DB_MARKERS {
-            // Convert dB to y position using audio constants
-            let normalized = constants::db_to_normalized(db);
-            let y = spectrum_height * (1.0 - normalized);
+        let tick_stroke = Stroke::default()
+            .with_width(UITheme::TICK_MARK_WIDTH)
+            .with_color(UITheme::TEXT_SECONDARY);
 
-            // Draw tick mark at right edge
-            let tick_start = Point::new(tick_start_x, y);
-            let tick_end = Point::new(tick_end_x, y);
-            let tick_path = Path::line(tick_start, tick_end);
-
-            let tick_stroke = Stroke::default()
-                .with_width(UITheme::TICK_MARK_WIDTH)
-                .with_color(UITheme::TEXT_SECONDARY);
-            frame.stroke(&tick_path, tick_stroke);
-
-            // TODO: Add text labels when text rendering becomes available
-            // For now, just the tick marks provide visual reference
+        // Generate and draw tick marks using pure function
+        let tick_marks = generate_db_tick_marks(spectrum_height, tick_start_x, tick_end_x);
+        for tick_mark in tick_marks {
+            let tick_path = Path::line(tick_mark.start, tick_mark.end);
+            frame.stroke(&tick_path, tick_stroke.clone());
         }
+
+        // TODO: Add text labels when text rendering becomes available
+        // For now, just the tick marks provide visual reference
 
         // Draw "dB" indicator dot at bottom right corner
         let db_label_pos = Point::new(size.width - 8.0, spectrum_height + 15.0);
         let db_indicator = Path::circle(db_label_pos, 2.0);
         frame.fill(&db_indicator, UITheme::TEXT_SECONDARY);
     }
+}
+
+/// Calculate logarithmic frequency for a display point index
+///
+/// Maps point indices to frequencies using logarithmic scaling for musical perception.
+/// Lower indices represent lower frequencies, following the standard 20Hz-20kHz range.
+pub fn calculate_log_frequency(point_index: usize, total_points: usize) -> f32 {
+    use crate::audio::constants;
+    let min_freq = constants::MIN_FREQUENCY;
+    let max_freq = constants::MAX_FREQUENCY;
+
+    let norm_pos = point_index as f32 / total_points as f32;
+    min_freq * (max_freq / min_freq).powf(norm_pos)
+}
+
+/// Interpolate magnitude value from FFT bins at a specific frequency
+///
+/// Uses linear interpolation between adjacent bins to provide smooth frequency response.
+/// Handles edge cases where the frequency maps outside the available bin range.
+pub fn interpolate_bin_value(bins: &[f32], frequency: f32, sample_rate: f32) -> f32 {
+    let nyquist_frequency = sample_rate / 2.0;
+    let bin_position = (frequency / nyquist_frequency) * bins.len() as f32;
+    let bin_index = bin_position.floor() as usize;
+    let bin_fraction = bin_position.fract();
+
+    if bin_index + 1 < bins.len() {
+        // Linear interpolation between two bins
+        let current_bin = bins[bin_index];
+        let next_bin = bins[bin_index + 1];
+        current_bin + (next_bin - current_bin) * bin_fraction
+    } else if bin_index < bins.len() {
+        bins[bin_index]
+    } else {
+        -100.0 // Out of range
+    }
+}
+
+/// Map dB value to screen coordinates
+///
+/// Converts dB magnitude to pixel coordinates using the standard spectrum display mapping.
+/// Applies A-weighting for perceptually accurate frequency response visualization.
+pub fn map_to_screen_coordinates(
+    db_value: f32,
+    frequency: f32,
+    size: Size,
+    point_index: usize,
+    total_points: usize,
+) -> Point {
+    // Apply A-weighting for perceptual accuracy
+    let weighted_db = apply_a_weighting(frequency, db_value);
+
+    // Map dB range to screen coordinates
+    let normalized = constants::db_to_normalized(weighted_db);
+
+    let x = (point_index as f32 / total_points as f32) * size.width;
+    let y = size.height * (1.0 - normalized);
+
+    Point::new(x, y)
+}
+
+/// Calculate a single display point with complete frequency mapping pipeline
+///
+/// Combines frequency calculation, bin interpolation, and screen mapping into a single
+/// composable function. This is the main pure function that replaces the original method.
+pub fn calculate_single_display_point(
+    bins: &[f32],
+    sample_rate: f32,
+    size: Size,
+    point_index: usize,
+    total_points: usize,
+) -> Point {
+    let frequency = calculate_log_frequency(point_index, total_points);
+    let db_value = interpolate_bin_value(bins, frequency, sample_rate);
+    map_to_screen_coordinates(db_value, frequency, size, point_index, total_points)
+}
+
+/// Calculate adaptive smoothing factor based on frequency position
+///
+/// Applies stronger smoothing to low frequencies (left side of spectrum) and
+/// lighter smoothing to high frequencies for better detail preservation.
+/// Matches the frequency characteristics of professional spectrum analyzers.
+pub fn calculate_adaptive_smoothing(index: usize, total_points: usize, base_smoothing: f32) -> f32 {
+    let progress = index as f32 / total_points as f32;
+    if progress < 0.3 {
+        // Low frequencies (20Hz - ~2kHz): maximum smoothing
+        base_smoothing * 1.5
+    } else if progress < 0.7 {
+        // Mid frequencies (~2kHz - ~8kHz): normal smoothing
+        base_smoothing
+    } else {
+        // High frequencies (>8kHz): minimal smoothing for detail
+        base_smoothing * 0.4
+    }
+}
+
+/// Create Bézier control points for smooth curve segment
+///
+/// Generates control points for a cubic Bézier curve between two points.
+/// Control points are positioned to create smooth transitions while preserving
+/// the overall curve shape and frequency response characteristics.
+pub fn create_bezier_control_points(
+    current_point: Point,
+    next_point: Point,
+    smoothing_factor: f32,
+) -> (Point, Point) {
+    let control_point1 = Point::new(
+        current_point.x + (next_point.x - current_point.x) * smoothing_factor,
+        current_point.y,
+    );
+    let control_point2 = Point::new(
+        next_point.x - (next_point.x - current_point.x) * smoothing_factor,
+        next_point.y,
+    );
+    (control_point1, control_point2)
+}
+
+/// Generate Bézier curve segments from a series of points
+///
+/// Creates smooth curve segments with adaptive smoothing based on frequency position.
+/// Returns control point pairs that can be used to draw smooth Bézier curves.
+/// Each segment connects adjacent points with appropriate smoothing.
+pub fn generate_bezier_segments(
+    points: &[Point],
+    base_smoothing: f32,
+) -> Vec<(Point, Point, Point)> {
+    if points.len() < 2 {
+        return Vec::new();
+    }
+
+    points
+        .windows(2)
+        .enumerate()
+        .map(|(i, window)| {
+            let current = window[0];
+            let next = window[1];
+            let adaptive_smoothing =
+                calculate_adaptive_smoothing(i + 1, points.len(), base_smoothing);
+            let (control1, control2) =
+                create_bezier_control_points(current, next, adaptive_smoothing);
+            (control1, control2, next)
+        })
+        .collect()
+}
+
+/// Grid line data for spectrum display
+pub struct GridLine {
+    pub start: Point,
+    pub end: Point,
+}
+
+/// Generate horizontal grid lines for dB levels
+pub fn generate_db_grid_lines(spectrum_width: f32, spectrum_height: f32) -> Vec<GridLine> {
+    (0..=10)
+        .map(|i| {
+            let db = -(i as f32 * 10.0);
+            let normalized = constants::db_to_normalized(db);
+            let y = spectrum_height * (1.0 - normalized);
+            GridLine {
+                start: Point::new(0.0, y),
+                end: Point::new(spectrum_width, y),
+            }
+        })
+        .collect()
+}
+
+/// Generate vertical grid lines for frequency markers
+pub fn generate_frequency_grid_lines(spectrum_width: f32, spectrum_height: f32) -> Vec<GridLine> {
+    constants::FREQUENCY_MARKERS
+        .iter()
+        .map(|&(freq, _label)| {
+            let log_pos = constants::freq_to_log_position(freq);
+            let x = log_pos * spectrum_width;
+            GridLine {
+                start: Point::new(x, 0.0),
+                end: Point::new(x, spectrum_height),
+            }
+        })
+        .collect()
+}
+
+/// Tick mark data for labels
+pub struct TickMark {
+    pub start: Point,
+    pub end: Point,
+}
+
+/// Generate frequency tick marks
+pub fn generate_frequency_tick_marks(spectrum_width: f32, label_y: f32) -> Vec<TickMark> {
+    constants::FREQUENCY_MARKERS
+        .iter()
+        .map(|&(freq, _label)| {
+            let log_pos = constants::freq_to_log_position(freq);
+            let x = log_pos * spectrum_width;
+            TickMark {
+                start: Point::new(x, label_y - UITheme::TICK_MARK_LENGTH),
+                end: Point::new(x, label_y - 3.0),
+            }
+        })
+        .collect()
+}
+
+/// Generate dB tick marks
+pub fn generate_db_tick_marks(
+    spectrum_height: f32,
+    tick_start_x: f32,
+    tick_end_x: f32,
+) -> Vec<TickMark> {
+    constants::DB_MARKERS
+        .iter()
+        .map(|&(db, _label)| {
+            let normalized = constants::db_to_normalized(db);
+            let y = spectrum_height * (1.0 - normalized);
+            TickMark {
+                start: Point::new(tick_start_x, y),
+                end: Point::new(tick_end_x, y),
+            }
+        })
+        .collect()
 }

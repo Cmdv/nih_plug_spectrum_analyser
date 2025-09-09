@@ -116,29 +116,44 @@ let amplitude = magnitude * 2.0 / (SPECTRUM_WINDOW_SIZE as f32 * coherent_gain);
 
 ### Phase 1: Fix Core DSP Mathematics
 
-#### 1.1 Window Compensation Constants
-**NEED TO IMPLEMENT** (not provided by apodize):
+#### 1.1 Window Compensation Constants ✅ COMPLETED
+**IMPLEMENTED** (2025-09-08):
+- Removed dependency on `apodize` library
+- Implemented custom `generate_hann_window()` function with detailed comments
+- Added `window_coherent_gain` field to `SpectrumAnalyzer` struct
+- Dynamically calculate and store coherent gain (≈0.5 for Hann window)
+- Added TODO for dynamic window size based on sample rate
+
 ```rust
-const BLACKMAN_COHERENT_GAIN: f32 = 0.42;
-const HANNING_COHERENT_GAIN: f32 = 0.50;
-const HAMMING_COHERENT_GAIN: f32 = 0.54;
-const FLAT_TOP_COHERENT_GAIN: f32 = 0.22;
+// Now in spectrum_analyzer.rs:
+fn generate_hann_window(window_size: usize) -> Vec<f32> { ... }
+// Coherent gain calculated and stored: window_coherent_gain: f32
 ```
 
-#### 1.2 Correct FFT Amplitude Scaling
-**IMPLEMENT** (realfft provides raw output only):
+#### 1.2 Correct FFT Amplitude Scaling 🚧 NEXT STEP
+**TO IMPLEMENT** (realfft provides raw output only):
 ```rust
-// From spectrum.md: Single-sided amplitude scaling
-fn calculate_amplitude(fft_magnitude: f32, fft_size: usize, coherent_gain: f32) -> f32 {
-    // Factor of 2 for single-sided spectrum (except DC and Nyquist)
-    let scaling = if bin_index == 0 || (fft_size % 2 == 0 && bin_index == fft_size/2) {
-        1.0 / (fft_size as f32)  // DC and Nyquist bins
-    } else {
-        2.0 / (fft_size as f32)  // Other bins
-    };
-    
-    // Apply window compensation
-    fft_magnitude * scaling / coherent_gain
+// NEXT: Update compute_magnitude_spectrum() to use proper scaling
+// Current WRONG implementation (line ~191):
+let normalized_magnitude = magnitude / (SPECTRUM_WINDOW_SIZE as f32).sqrt();
+
+// Should be REPLACED with:
+fn compute_magnitude_spectrum(&mut self, sample_rate: f32) {
+    for (bin_idx, &complex_bin) in self.frequency_domain_buffer.iter().enumerate() {
+        let magnitude = complex_bin.norm();
+        
+        // Apply 2/N scaling for single-sided spectrum
+        let scaling = if bin_idx == 0 || bin_idx == SPECTRUM_BINS - 1 {
+            1.0 / (SPECTRUM_WINDOW_SIZE as f32)  // DC and Nyquist
+        } else {
+            2.0 / (SPECTRUM_WINDOW_SIZE as f32)  // Other bins
+        };
+        
+        // Apply window compensation using stored coherent gain
+        let amplitude = magnitude * scaling / self.window_coherent_gain;
+        
+        // Continue with dB conversion...
+    }
 }
 ```
 
@@ -286,6 +301,31 @@ let smoothed_magnitude = detector.detect(raw_magnitude);
 - Maintain triple buffer communication (it's working correctly)
 - Preserve separation of audio processing vs UI display
 - Keep current parameter and gain processing separate
+
+## Session Progress (2025-09-08)
+
+### ✅ Completed
+1. **Window Implementation**: Replaced `apodize` with custom Hann window generation
+2. **Coherent Gain Storage**: Added `window_coherent_gain` field to struct for compensation
+3. **Research Integration**: Analyzed `spectrum-analyzer` and `rust-dsp-crates.md` findings
+4. **Architecture Decision**: Chose manual implementation over library for learning
+
+### 🚧 Next Immediate Steps
+1. **Fix FFT Scaling** (Line ~207 in `compute_magnitude_spectrum`):
+   - Replace `magnitude / sqrt(N)` with proper `2/N` scaling
+   - Use stored `self.window_coherent_gain` for compensation
+   - Handle DC and Nyquist bins differently (1/N instead of 2/N)
+
+2. **Remove Debug Logging**:
+   - Remove or comment out the high energy logging (lines 203-212)
+   - It's currently spamming logs with every bin
+
+3. **Test with 1kHz Sine**:
+   - Should see single peak at bin ~85 (for 48kHz sample rate)
+   - Other bins should be at floor (-120 dB)
+
+### 📝 Current Issue
+The spectrum shows energy in ALL bins for a 1kHz sine wave (mountain shape), indicating the FFT scaling is fundamentally wrong. The window compensation is now ready, but the amplitude scaling needs fixing next.
 
 ## Success Criteria
 

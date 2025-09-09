@@ -1,4 +1,3 @@
-use crate::audio::constants;
 use core::f32::consts::PI;
 use libm::cosf;
 use nih_plug::prelude::*;
@@ -181,62 +180,127 @@ impl SpectrumAnalyzer {
         self.spectrum_producer.write(self.spectrum_result);
     }
 
-    /// Extract mono mix from stereo buffer for spectral analysis
-    /// Professional spectrum analyzers typically analyze the sum of all channels
+    /// Extract mono mix from stereo buffer and store in internal buffer
     fn extract_mono_samples(&mut self, buffer: &Buffer) {
-        let num_channels = buffer.channels();
-        let num_samples = buffer.samples().min(SPECTRUM_WINDOW_SIZE);
-
-        if num_channels == 0 {
-            return;
-        }
-
-        // Clear the time domain buffer first
-        for i in 0..SPECTRUM_WINDOW_SIZE {
-            self.time_domain_buffer[i] = 0.0;
-        }
-
-        // Get immutable access to channel slices
-        let channel_slices = buffer.as_slice_immutable();
-
-        // Sum all channels into mono mix
-        for channel_idx in 0..num_channels {
-            let channel = &channel_slices[channel_idx];
-            for (sample_idx, &sample) in channel.iter().enumerate().take(num_samples) {
-                self.time_domain_buffer[sample_idx] += sample;
-            }
-        }
-
-        // Normalize by channel count
-        let normalization = 1.0 / num_channels as f32;
-        for sample in self.time_domain_buffer.iter_mut().take(num_samples) {
-            *sample *= normalization;
-        }
-
-        // Remaining samples are already zero-padded from the clear above
+        // Use the pure function and copy result into internal buffer
+        let mono_samples = extract_mono_samples(buffer, SPECTRUM_WINDOW_SIZE);
+        self.time_domain_buffer.copy_from_slice(&mono_samples);
     }
 
-    /// Apply Blackman window to reduce spectral leakage
-    /// Essential for accurate frequency analysis
+    /// Apply windowing and store result in internal buffer
     fn apply_window(&mut self) {
-        for (sample, &window_coeff) in self
-            .time_domain_buffer
-            .iter_mut()
-            .zip(self.window_function.iter())
-        {
-            *sample *= window_coeff;
+        let windowed = apply_window(&self.time_domain_buffer, &self.window_function);
+        self.time_domain_buffer.copy_from_slice(&windowed);
+    }
+
+    /// Convert complex FFT output to magnitude spectrum and store in internal buffer
+    fn compute_magnitude_spectrum(&mut self, _sample_rate: f32) {
+        let magnitude_spectrum =
+            compute_magnitude_spectrum(&self.frequency_domain_buffer, SPECTRUM_WINDOW_SIZE);
+        self.spectrum_result.copy_from_slice(&magnitude_spectrum);
+    }
+
+    /// Apply perceptual smoothing and update internal state
+    fn apply_spectrum_smoothing(&mut self) {
+        let (smoothed_spectrum, updated_previous) =
+            apply_spectrum_smoothing(&self.spectrum_result, &self.previous_spectrum);
+        self.spectrum_result.copy_from_slice(&smoothed_spectrum);
+        self.previous_spectrum.copy_from_slice(&updated_previous);
+    }
+}
+
+/// Apply A-weighting for perceptually accurate frequency response
+/// Based on IEC 61672-1:2013 standard - used in professional audio measurement
+pub fn apply_a_weighting(frequency_hz: f32, magnitude_db: f32) -> f32 {
+    if frequency_hz <= 0.0 {
+        return magnitude_db - 50.0; // Heavily attenuate invalid frequencies
+    }
+
+    let f = frequency_hz as f64;
+    let f2 = f * f;
+    let f4 = f2 * f2;
+
+    // A-weighting transfer function (IEC 61672-1 standard)
+    let numerator = 12194.0_f64.powi(2) * f4;
+    let denominator = (f2 + 20.6_f64.powi(2))
+        * (f2 + 12194.0_f64.powi(2))
+        * (f2 + 107.7_f64.powi(2)).sqrt()
+        * (f2 + 737.9_f64.powi(2)).sqrt();
+
+    if denominator == 0.0 {
+        return magnitude_db - 50.0;
+    }
+
+    let response_amplitude = numerator / denominator;
+    let a_weighting_db = 20.0 * response_amplitude.log10() + 2.00; // +2dB normalization
+
+    magnitude_db + a_weighting_db as f32
+}
+
+/// Extract mono mix from stereo buffer for spectral analysis
+///
+/// Professional spectrum analyzers typically analyze the sum of all channels.
+/// Returns a vector of mono samples, zero-padded to the specified window size.
+/// Channels are summed and normalized to prevent clipping.
+pub fn extract_mono_samples(buffer: &Buffer, window_size: usize) -> Vec<f32> {
+    let num_channels = buffer.channels();
+    let num_samples = buffer.samples().min(window_size);
+
+    // Initialize with zeros (handles padding automatically)
+    let mut mono_samples = vec![0.0; window_size];
+
+    if num_channels == 0 {
+        return mono_samples;
+    }
+
+    // Get immutable access to channel slices
+    let channel_slices = buffer.as_slice_immutable();
+
+    // Sum all channels into mono mix
+    for channel_idx in 0..num_channels {
+        let channel = &channel_slices[channel_idx];
+        for (sample_idx, &sample) in channel.iter().enumerate().take(num_samples) {
+            mono_samples[sample_idx] += sample;
         }
     }
 
-    /// Convert complex FFT output to magnitude spectrum in dB
-    fn compute_magnitude_spectrum(&mut self, sample_rate: f32) {
-        for (bin_idx, &complex_bin) in self.frequency_domain_buffer.iter().enumerate() {
+    // Normalize by channel count to prevent clipping
+    let normalization = 1.0 / num_channels as f32;
+    for sample in mono_samples.iter_mut().take(num_samples) {
+        *sample *= normalization;
+    }
+
+    mono_samples
+}
+
+/// Apply windowing function to time domain samples
+///
+/// Windowing reduces spectral leakage by tapering the signal edges to zero.
+/// The Hann window provides good frequency resolution with -32dB sidelobe suppression.
+/// Each sample is multiplied by the corresponding window coefficient.
+pub fn apply_window(samples: &[f32], window_function: &[f32]) -> Vec<f32> {
+    samples
+        .iter()
+        .zip(window_function.iter())
+        .map(|(&sample, &window_coeff)| sample * window_coeff)
+        .collect()
+}
+
+/// Convert complex FFT output to magnitude spectrum in dB
+///
+/// Calculates magnitude from complex FFT bins and converts to dB scale.
+/// Applies proper FFT normalization and gain compensation to match professional
+/// spectrum analyzer behavior. Uses a floor value to prevent log(0) errors.
+pub fn compute_magnitude_spectrum(frequency_bins: &[Complex32], window_size: usize) -> Vec<f32> {
+    frequency_bins
+        .iter()
+        .map(|&complex_bin| {
             // Calculate magnitude: sqrt(re² + im²)
             let magnitude =
                 (complex_bin.re * complex_bin.re + complex_bin.im * complex_bin.im).sqrt();
 
             // Normalize by square root of FFT size for proper scaling (standard FFT normalization)
-            let normalized_magnitude = magnitude / (SPECTRUM_WINDOW_SIZE as f32).sqrt();
+            let normalized_magnitude = magnitude / (window_size as f32).sqrt();
 
             // Convert to dB with proper floor to avoid log(0)
             // Add gain compensation to match professional analyzer levels
@@ -247,100 +311,35 @@ impl SpectrumAnalyzer {
                 SPECTRUM_FLOOR_DB
             };
 
-            self.spectrum_result[bin_idx] = db_value.max(SPECTRUM_FLOOR_DB);
-            if db_value > -10.0 && db_value < 10.0 {
-                // Only log reasonable peaks
-                nih_plug::nih_log!(
-                    "High energy at bin {}: freq={:.1}Hz, magnitude={:.6}, dB={:.2}",
-                    bin_idx,
-                    display_utils::bin_to_frequency(bin_idx, sample_rate),
-                    normalized_magnitude,
-                    db_value
-                );
-            }
-        }
-    }
+            db_value.max(SPECTRUM_FLOOR_DB)
+        })
+        .collect()
+}
 
-    /// Apply perceptual smoothing with attack/release characteristics
-    /// Similar to analog spectrum analyzers and professional plugins like Pro-Q
-    fn apply_spectrum_smoothing(&mut self) {
-        for bin_idx in 0..SPECTRUM_BINS {
-            let current_db = self.spectrum_result[bin_idx];
-            let previous_db = self.previous_spectrum[bin_idx];
-
-            let smoothed_db = if current_db > previous_db {
+/// Apply perceptual smoothing with attack/release characteristics
+///
+/// Smoothing prevents spectrum flickering and makes the display easier to read.
+/// Uses different time constants for attack (fast response to increases) and
+/// release (slow decay), similar to analog spectrum analyzers and Pro-Q.
+/// Returns (smoothed_spectrum, updated_previous_spectrum) tuple.
+pub fn apply_spectrum_smoothing(
+    current_spectrum: &[f32],
+    previous_spectrum: &[f32],
+) -> (Vec<f32>, Vec<f32>) {
+    let smoothed: Vec<f32> = current_spectrum
+        .iter()
+        .zip(previous_spectrum.iter())
+        .map(|(&current_db, &previous_db)| {
+            if current_db > previous_db {
                 // Attack: fast response to increases (like a peak meter)
                 previous_db + (current_db - previous_db) * SPECTRUM_ATTACK
             } else {
                 // Release: slow decay (prevents flickering, easier to read)
                 previous_db + (current_db - previous_db) * SPECTRUM_RELEASE
-            };
+            }
+        })
+        .collect();
 
-            self.spectrum_result[bin_idx] = smoothed_db;
-            self.previous_spectrum[bin_idx] = smoothed_db;
-        }
-    }
-}
-
-/// Utility functions for spectrum display calculations
-pub mod display_utils {
-    use super::*;
-
-    /// Apply A-weighting for perceptually accurate frequency response
-    /// Based on IEC 61672-1:2013 standard - used in professional audio measurement
-    pub fn apply_a_weighting(frequency_hz: f32, magnitude_db: f32) -> f32 {
-        if frequency_hz <= 0.0 {
-            return magnitude_db - 50.0; // Heavily attenuate invalid frequencies
-        }
-
-        let f = frequency_hz as f64;
-        let f2 = f * f;
-        let f4 = f2 * f2;
-
-        // A-weighting transfer function (IEC 61672-1 standard)
-        let numerator = 12194.0_f64.powi(2) * f4;
-        let denominator = (f2 + 20.6_f64.powi(2))
-            * (f2 + 12194.0_f64.powi(2))
-            * (f2 + 107.7_f64.powi(2)).sqrt()
-            * (f2 + 737.9_f64.powi(2)).sqrt();
-
-        if denominator == 0.0 {
-            return magnitude_db - 50.0;
-        }
-
-        let response_amplitude = numerator / denominator;
-        let a_weighting_db = 20.0 * response_amplitude.log10() + 2.00; // +2dB normalization
-
-        magnitude_db + a_weighting_db as f32
-    }
-
-    /// Calculate frequency for a given bin index
-    /// Used by display components for frequency axis labeling
-    pub fn bin_to_frequency(bin_index: usize, sample_rate: f32) -> f32 {
-        (bin_index as f32 * sample_rate) / (2.0 * SPECTRUM_WINDOW_SIZE as f32)
-    }
-
-    /// Convert linear frequency to logarithmic display position (like Pro-Q)
-    /// Maps 20Hz-20kHz logarithmically for musical frequency perception
-    pub fn frequency_to_display_position(frequency_hz: f32) -> f32 {
-        let min_freq = constants::MIN_FREQUENCY;
-        let max_freq = constants::MAX_FREQUENCY;
-
-        if frequency_hz <= min_freq {
-            0.0
-        } else if frequency_hz >= max_freq {
-            1.0
-        } else {
-            (frequency_hz / min_freq).log10() / (max_freq / min_freq).log10()
-        }
-    }
-
-    /// Convert display position back to frequency (inverse of above)
-    pub fn display_position_to_frequency(position: f32) -> f32 {
-        let min_freq = constants::MIN_FREQUENCY;
-        let max_freq = constants::MAX_FREQUENCY;
-        let log_range = (max_freq / min_freq).log10();
-
-        min_freq * 10.0_f32.powf(position * log_range)
-    }
+    // Return both the smoothed result and the updated previous spectrum
+    (smoothed.clone(), smoothed)
 }
