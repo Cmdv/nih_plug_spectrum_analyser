@@ -1,5 +1,5 @@
 use crate::audio::constants;
-use crate::audio::spectrum_analyzer::{apply_a_weighting, SpectrumOutput};
+use crate::audio::spectrum_analyzer::SpectrumOutput;
 use crate::ui::UITheme;
 use atomic_float::AtomicF32;
 use nih_plug_iced::widget::canvas::{self, Frame, Geometry, Path, Program, Stroke};
@@ -126,6 +126,26 @@ impl SpectrumDisplay {
 
         // Convert to Vec for compatibility with existing display code
         let smoothed_copy: Vec<f32> = spectrum_data.to_vec();
+        
+        // Debug: Find peak in the data we're displaying
+        let (peak_idx, peak_val) = smoothed_copy
+            .iter()
+            .enumerate()
+            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+            .map(|(i, &v)| (i, v))
+            .unwrap_or((0, -120.0));
+        
+        static mut UI_FRAME_COUNT: u32 = 0;
+        unsafe {
+            UI_FRAME_COUNT += 1;
+            if UI_FRAME_COUNT % 60 == 0 {
+                let sample_rate = self.sample_rate.load(Ordering::Relaxed);
+                // Fix: Should be sample_rate / window_size, not divided by 2 again
+                let peak_freq = (peak_idx as f32 * sample_rate) / 2048.0;
+                nih_plug::nih_log!("UI received peak: bin {} @ {:.0}Hz = {:.1}dB", 
+                    peak_idx, peak_freq, peak_val);
+            }
+        }
 
         if smoothed_copy.len() < 2 {
             return;
@@ -138,11 +158,31 @@ impl SpectrumDisplay {
         let num_points = 768; // Optimal for smooth curves - fewer points = smoother
         let mut points = Vec::with_capacity(num_points);
 
+        // Debug: Log what we're drawing
+        static mut DRAW_COUNTER: u32 = 0;
+        unsafe {
+            DRAW_COUNTER += 1;
+            if DRAW_COUNTER % 120 == 0 {
+                nih_plug::nih_log!("Display: Drawing {} points from {} bins", num_points, smoothed_copy.len());
+            }
+        }
+
         // Collect all points first
         for i in 0..num_points {
             let point =
                 self.calculate_spectrum_point_for_display(i, num_points, &smoothed_copy, size);
             points.push(point);
+            
+            // Log display points including around 1kHz
+            unsafe {
+                if DRAW_COUNTER % 120 == 0 {
+                    let freq = calculate_log_frequency(i, num_points);
+                    if i < 10 || (freq > 900.0 && freq < 1100.0) {
+                        let db_val = interpolate_bin_value(&smoothed_copy, freq, 48000.0);
+                        nih_plug::nih_log!("  Point {}: freq={:.0}Hz, db={:.1}dB, y={:.1}", i, freq, db_val, point.y);
+                    }
+                }
+            }
         }
 
         if points.len() < 3 {
@@ -249,7 +289,8 @@ pub fn calculate_log_frequency(point_index: usize, total_points: usize) -> f32 {
 /// Handles edge cases where the frequency maps outside the available bin range.
 pub fn interpolate_bin_value(bins: &[f32], frequency: f32, sample_rate: f32) -> f32 {
     let nyquist_frequency = sample_rate / 2.0;
-    let bin_position = (frequency / nyquist_frequency) * bins.len() as f32;
+    // Fix: bins.len() - 1 because indices go from 0 to len-1
+    let bin_position = (frequency / nyquist_frequency) * (bins.len() - 1) as f32;
     let bin_index = bin_position.floor() as usize;
     let bin_fraction = bin_position.fract();
 
@@ -271,16 +312,16 @@ pub fn interpolate_bin_value(bins: &[f32], frequency: f32, sample_rate: f32) -> 
 /// Applies A-weighting for perceptually accurate frequency response visualization.
 pub fn map_to_screen_coordinates(
     db_value: f32,
-    frequency: f32,
+    _frequency: f32,
     size: Size,
     point_index: usize,
     total_points: usize,
 ) -> Point {
     // Apply A-weighting for perceptual accuracy
-    let weighted_db = apply_a_weighting(frequency, db_value);
+    // let weighted_db = apply_a_weighting(frequency, db_value);
 
     // Map dB range to screen coordinates
-    let normalized = constants::db_to_normalized(weighted_db);
+    let normalized = constants::db_to_normalized(db_value);
 
     let x = (point_index as f32 / total_points as f32) * size.width;
     let y = size.height * (1.0 - normalized);

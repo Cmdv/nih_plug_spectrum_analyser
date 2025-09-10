@@ -6,6 +6,7 @@ use std::sync::Arc;
 use triple_buffer::TripleBuffer;
 
 /// The size of our FFT analysis window
+/// 2048 gives us 23.4Hz resolution at 48kHz (good for 20Hz-20kHz range)
 pub const SPECTRUM_WINDOW_SIZE: usize = 2048;
 
 /// Number of frequency bins produced by the FFT (N/2 + 1 for real FFT)
@@ -15,10 +16,10 @@ pub const SPECTRUM_BINS: usize = SPECTRUM_WINDOW_SIZE / 2 + 1;
 const SPECTRUM_FLOOR_DB: f32 = -120.0;
 
 /// Time constant for spectrum attack (fast response to increases)
-const SPECTRUM_ATTACK: f32 = 0.1;
+const SPECTRUM_ATTACK: f32 = 0.3;  // Faster attack for testing
 
 /// Time constant for spectrum release (slow decay)  
-const SPECTRUM_RELEASE: f32 = 0.01;
+const SPECTRUM_RELEASE: f32 = 0.05;  // Faster release to reduce "rocking"
 
 /// The spectrum analyzer's frequency data - array of magnitude values in dB
 pub type SpectrumData = [f32; SPECTRUM_BINS];
@@ -96,6 +97,16 @@ pub struct SpectrumAnalyzer {
     /// Hann window reduces amplitude by ~50%, this value compensates for it
     window_coherent_gain: f32,
 
+    /// Ring buffer for accumulating samples across multiple process calls
+    /// Size is 2x window size for 50% overlap
+    ring_buffer: Vec<f32>,
+    
+    /// Write position in ring buffer
+    ring_buffer_pos: usize,
+    
+    /// Sample counter for triggering FFT processing
+    samples_since_fft: usize,
+
     /// Input buffer for windowed samples (time domain)
     time_domain_buffer: Vec<f32>,
 
@@ -141,6 +152,9 @@ impl SpectrumAnalyzer {
             fft_processor,
             window_function,
             window_coherent_gain: coherent_gain,
+            ring_buffer: vec![0.0; SPECTRUM_WINDOW_SIZE * 2], // 2x size for overlap
+            ring_buffer_pos: 0,
+            samples_since_fft: 0,
             time_domain_buffer: vec![0.0; SPECTRUM_WINDOW_SIZE],
             frequency_domain_buffer: vec![Complex32::new(0.0, 0.0); SPECTRUM_BINS],
             spectrum_result: [SPECTRUM_FLOOR_DB; SPECTRUM_BINS],
@@ -154,37 +168,181 @@ impl SpectrumAnalyzer {
     /// Compute spectrum from audio buffer and send to UI thread
     /// Called from audio thread - must be real-time safe (no allocations)
     pub fn process(&mut self, buffer: &Buffer, sample_rate: f32) {
-        // Extract mono mix from stereo buffer for spectrum analysis
-        // This follows the same pattern as professional spectrum analyzers
-        self.extract_mono_samples(buffer);
+        // Add incoming samples to ring buffer
+        self.add_samples_to_ring_buffer(buffer);
+        
+        // Check if we should process FFT (50% overlap = every WINDOW_SIZE/2 samples)
+        if self.samples_since_fft >= SPECTRUM_WINDOW_SIZE / 2 {
+            self.samples_since_fft = 0;
+            
+            // Copy from ring buffer to FFT buffer
+            self.copy_from_ring_buffer();
+            
+            // Debug: Comprehensive spectral leakage analysis
+            static mut DEBUG_COUNTER: u32 = 0;
+            unsafe {
+                DEBUG_COUNTER += 1;
+                if DEBUG_COUNTER % 120 == 0 {
+                    let max_sample = self.time_domain_buffer.iter()
+                        .map(|s| s.abs())
+                        .fold(0.0f32, f32::max);
+                    let rms = (self.time_domain_buffer.iter()
+                        .map(|s| s * s)
+                        .sum::<f32>() / SPECTRUM_WINDOW_SIZE as f32)
+                        .sqrt();
+                    nih_log!("Time domain: max={:.3}, RMS={:.3}", max_sample, rms);
+                    
+                    // Check for DC offset and phase discontinuities
+                    let dc_offset = self.time_domain_buffer.iter().sum::<f32>() / SPECTRUM_WINDOW_SIZE as f32;
+                    nih_log!("DC offset: {:.6}", dc_offset);
+                    
+                    // Check frequency bin alignment for 1kHz
+                    let exact_bin_1k = (1000.0 * SPECTRUM_WINDOW_SIZE as f32) / sample_rate;
+                    let bin_error = exact_bin_1k - exact_bin_1k.round();
+                    nih_log!("1kHz bin alignment: exact={:.3}, error={:.3}", exact_bin_1k, bin_error);
+                    
+                    // Check for signal periodicity issues
+                    let samples_per_1k_cycle = sample_rate / 1000.0;
+                    let cycles_in_window = SPECTRUM_WINDOW_SIZE as f32 / samples_per_1k_cycle;
+                    let integer_cycles = cycles_in_window.round();
+                    let cycle_error = cycles_in_window - integer_cycles;
+                    nih_log!("1kHz cycles: {:.3} cycles, {:.3} integer, error={:.3}", 
+                            cycles_in_window, integer_cycles, cycle_error);
+                }
+            }
+            
+            // Apply windowing to reduce spectral leakage
+            self.apply_window();
+            
+            // Debug: Check after windowing
+            unsafe {
+                if DEBUG_COUNTER % 120 == 0 {
+                    let max_windowed = self.time_domain_buffer.iter()
+                        .map(|s| s.abs())
+                        .fold(0.0f32, f32::max);
+                    nih_log!("After window: max={:.3}, gain={:.3}", max_windowed, self.window_coherent_gain);
+                }
+            }
+            
+            // Perform FFT: time domain -> frequency domain
+            if let Err(_) = self.fft_processor.process(
+                &mut self.time_domain_buffer,
+                &mut self.frequency_domain_buffer,
+            ) {
+                // FFT failed - skip this frame to maintain real-time safety
+                return;
+            }
+            
+            // Debug: Analyze spectral distribution across wide frequency range
+            unsafe {
+                if DEBUG_COUNTER % 120 == 0 {
+                    nih_log!("FFT spectral analysis - examining leakage pattern:");
+                    
+                    // Look at frequency range from 200Hz to 2kHz to see leakage pattern
+                    let start_freq = 200.0;
+                    let end_freq = 2000.0;
+                    let start_bin = ((start_freq * SPECTRUM_WINDOW_SIZE as f32) / sample_rate) as usize;
+                    let end_bin = ((end_freq * SPECTRUM_WINDOW_SIZE as f32) / sample_rate) as usize;
+                    
+                    nih_log!("  Scanning bins {} to {} ({:.0}Hz to {:.0}Hz)", start_bin, end_bin, start_freq, end_freq);
+                    
+                    // Sample every 5th bin to avoid spam but get good coverage
+                    for bin in (start_bin..=end_bin.min(self.frequency_domain_buffer.len()-1)).step_by(5) {
+                        let magnitude = self.frequency_domain_buffer[bin].norm();
+                        let freq = (bin as f32 * sample_rate) / SPECTRUM_WINDOW_SIZE as f32;
+                        let raw_db = if magnitude > 0.0 {
+                            20.0 * magnitude.log10()
+                        } else {
+                            -120.0
+                        };
+                        
+                        // Only log bins with significant energy (above -80dB)
+                        if raw_db > -80.0 {
+                            nih_log!("  Bin {}: {:.0}Hz, mag={:.6}, raw_dB={:.1}", 
+                                    bin, freq, magnitude, raw_db);
+                        }
+                    }
+                    
+                    // Also check the exact 1kHz region for reference
+                    let expected_1k_bin = ((1000.0 * SPECTRUM_WINDOW_SIZE as f32) / sample_rate) as usize;
+                    let mag_1k = self.frequency_domain_buffer[expected_1k_bin].norm();
+                    let db_1k = if mag_1k > 0.0 { 20.0 * mag_1k.log10() } else { -120.0 };
+                    nih_log!("  1kHz reference: bin {}, mag={:.6}, raw_dB={:.1}", expected_1k_bin, mag_1k, db_1k);
+                }
+            }
 
-        // Apply windowing to reduce spectral leakage
-        self.apply_window();
-
-        // Perform FFT: time domain -> frequency domain
-        if let Err(_) = self.fft_processor.process(
-            &mut self.time_domain_buffer,
-            &mut self.frequency_domain_buffer,
-        ) {
-            // FFT failed - skip this frame to maintain real-time safety
-            return;
+            // Convert complex FFT output to magnitude spectrum in dB
+            self.compute_magnitude_spectrum(sample_rate);
+            
+            // Debug: Check final dB values
+            unsafe {
+                if DEBUG_COUNTER % 120 == 0 {
+                    for i in 0..5 {
+                        let freq = (i as f32 * sample_rate) / SPECTRUM_WINDOW_SIZE as f32;
+                        nih_log!("Final bin {} @ {:.0}Hz: {:.1}dB", i, freq, self.spectrum_result[i]);
+                    }
+                    let expected_bin = (1000.0 * SPECTRUM_WINDOW_SIZE as f32 / sample_rate) as usize;
+                    for i in (expected_bin.saturating_sub(2))..=(expected_bin + 2) {
+                        if i < self.spectrum_result.len() {
+                            let freq = (i as f32 * sample_rate) / SPECTRUM_WINDOW_SIZE as f32;
+                            nih_log!("Final bin {} @ {:.0}Hz: {:.1}dB", i, freq, self.spectrum_result[i]);
+                        }
+                    }
+                }
+            }
+            
+            // Apply perceptual smoothing (attack/release envelope)
+            self.apply_spectrum_smoothing();
+            // Send result to UI thread (lock-free)
+            self.spectrum_producer.write(self.spectrum_result);
         }
-
-        // Convert complex FFT output to magnitude spectrum in dB
-        self.compute_magnitude_spectrum(sample_rate);
-
-        // Apply perceptual smoothing (attack/release envelope)
-        self.apply_spectrum_smoothing();
-
-        // Send result to UI thread (lock-free)
-        self.spectrum_producer.write(self.spectrum_result);
     }
 
-    /// Extract mono mix from stereo buffer and store in internal buffer
-    fn extract_mono_samples(&mut self, buffer: &Buffer) {
-        // Use the pure function and copy result into internal buffer
-        let mono_samples = extract_mono_samples(buffer, SPECTRUM_WINDOW_SIZE);
-        self.time_domain_buffer.copy_from_slice(&mono_samples);
+    /// Add samples from audio buffer to ring buffer
+    fn add_samples_to_ring_buffer(&mut self, buffer: &Buffer) {
+        let num_channels = buffer.channels();
+        let num_samples = buffer.samples();
+        
+        if num_channels == 0 || num_samples == 0 {
+            return;
+        }
+        
+        let channel_slices = buffer.as_slice_immutable();
+        
+        for sample_idx in 0..num_samples {
+            // Sum all channels for mono mix
+            let mut sample_sum = 0.0f32;
+            for channel_idx in 0..num_channels {
+                sample_sum += channel_slices[channel_idx][sample_idx];
+            }
+            
+            // Normalize by channel count and add to ring buffer
+            let mono_sample = sample_sum / num_channels as f32;
+            self.ring_buffer[self.ring_buffer_pos] = mono_sample;
+            
+            // Advance ring buffer position (wrap around)
+            self.ring_buffer_pos = (self.ring_buffer_pos + 1) % self.ring_buffer.len();
+            
+            self.samples_since_fft += 1;
+        }
+    }
+    
+    /// Copy most recent SPECTRUM_WINDOW_SIZE samples from ring buffer to FFT buffer
+    fn copy_from_ring_buffer(&mut self) {
+        let ring_len = self.ring_buffer.len();
+        
+        // Start position: current pos minus window size
+        let start_pos = if self.ring_buffer_pos >= SPECTRUM_WINDOW_SIZE {
+            self.ring_buffer_pos - SPECTRUM_WINDOW_SIZE
+        } else {
+            ring_len - (SPECTRUM_WINDOW_SIZE - self.ring_buffer_pos)
+        };
+        
+        // Copy samples (handle wrap-around)
+        for i in 0..SPECTRUM_WINDOW_SIZE {
+            let ring_idx = (start_pos + i) % ring_len;
+            self.time_domain_buffer[i] = self.ring_buffer[ring_idx];
+        }
     }
 
     /// Apply windowing and store result in internal buffer
@@ -194,9 +352,50 @@ impl SpectrumAnalyzer {
     }
 
     /// Convert complex FFT output to magnitude spectrum and store in internal buffer
-    fn compute_magnitude_spectrum(&mut self, _sample_rate: f32) {
-        let magnitude_spectrum =
-            compute_magnitude_spectrum(&self.frequency_domain_buffer, SPECTRUM_WINDOW_SIZE);
+    fn compute_magnitude_spectrum(&mut self, sample_rate: f32) {
+        let magnitude_spectrum = compute_magnitude_spectrum(
+            &self.frequency_domain_buffer,
+            SPECTRUM_WINDOW_SIZE,
+            self.window_coherent_gain,
+            sample_rate,
+        );
+        
+        // Debug: Find peak bin and its value
+        let (peak_bin, peak_value) = magnitude_spectrum
+            .iter()
+            .enumerate()
+            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+            .map(|(i, &v)| (i, v))
+            .unwrap_or((0, -120.0));
+        
+        let peak_freq = (peak_bin as f32 * sample_rate) / (SPECTRUM_WINDOW_SIZE as f32);
+        
+        // Only log every ~60 frames to avoid spam
+        static mut FRAME_COUNT: u32 = 0;
+        unsafe {
+            FRAME_COUNT += 1;
+            if FRAME_COUNT % 60 == 0 {
+                // Count bins above -60dB around the peak
+                let significant_bins: Vec<(usize, f32)> = magnitude_spectrum
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, &v)| v > -60.0)
+                    .map(|(i, &v)| (i, v))
+                    .collect();
+                
+                nih_log!("Peak: bin {} @ {:.0}Hz = {:.1}dB | {} bins > -60dB", 
+                    peak_bin, peak_freq, peak_value, significant_bins.len());
+                
+                // Show the first few significant bins
+                if significant_bins.len() < 20 {
+                    for (bin, val) in significant_bins.iter().take(5) {
+                        let freq = (*bin as f32 * sample_rate) / (SPECTRUM_WINDOW_SIZE as f32);
+                        nih_log!("  Bin {} @ {:.0}Hz = {:.1}dB", bin, freq, val);
+                    }
+                }
+            }
+        }
+        
         self.spectrum_result.copy_from_slice(&magnitude_spectrum);
     }
 
@@ -291,26 +490,49 @@ pub fn apply_window(samples: &[f32], window_function: &[f32]) -> Vec<f32> {
 /// Calculates magnitude from complex FFT bins and converts to dB scale.
 /// Applies proper FFT normalization and gain compensation to match professional
 /// spectrum analyzer behavior. Uses a floor value to prevent log(0) errors.
-pub fn compute_magnitude_spectrum(frequency_bins: &[Complex32], window_size: usize) -> Vec<f32> {
+pub fn compute_magnitude_spectrum(
+    frequency_bins: &[Complex32],
+    window_size: usize,
+    window_coherent_gain: f32,
+    sample_rate: f32,
+) -> Vec<f32> {
     frequency_bins
         .iter()
-        .map(|&complex_bin| {
-            // Calculate magnitude: sqrt(re² + im²)
-            let magnitude =
-                (complex_bin.re * complex_bin.re + complex_bin.im * complex_bin.im).sqrt();
-
-            // Normalize by square root of FFT size for proper scaling (standard FFT normalization)
-            let normalized_magnitude = magnitude / (window_size as f32).sqrt();
-
-            // Convert to dB with proper floor to avoid log(0)
-            // Add gain compensation to match professional analyzer levels
-            // Pro-Q and similar analyzers apply significant gain compensation
-            let db_value = if normalized_magnitude > 0.0 {
-                20.0 * normalized_magnitude.log10() + 36.0 // +36dB total compensation to match Pro-Q levels
+        .enumerate()
+        .map(|(bin_idx, &complex_bin)| {
+            // Calculate magnitude
+            let magnitude = complex_bin.norm();
+            
+            // According to spectrum.md: Use proper 2/N scaling for single-sided spectrum
+            let scaling = if bin_idx == 0 {
+                // DC component: no factor of 2
+                1.0 / window_size as f32
+            } else {
+                // All other bins: factor of 2 for single-sided spectrum
+                2.0 / window_size as f32
+            };
+            
+            // Apply window compensation (spectrum.md: divide by coherent gain)
+            let amplitude = magnitude * scaling / window_coherent_gain;
+            
+            // Debug first few bins
+            static mut LOG_ONCE: bool = false;
+            unsafe {
+                if !LOG_ONCE && bin_idx < 5 {
+                    let freq = (bin_idx as f32 * sample_rate) / window_size as f32;
+                    nih_log!("Bin {} @ {:.0}Hz: mag={:.6}, scaling={:.6}, coherent_gain={:.3}, amplitude={:.6}", 
+                        bin_idx, freq, magnitude, scaling, window_coherent_gain, amplitude);
+                    if bin_idx == 4 { LOG_ONCE = true; }
+                }
+            }
+            
+            // Convert to dBFS according to AES17 standard (spectrum.md)
+            let db_value = if amplitude > 1e-8 {
+                20.0 * amplitude.log10()
             } else {
                 SPECTRUM_FLOOR_DB
             };
-
+            
             db_value.max(SPECTRUM_FLOOR_DB)
         })
         .collect()
@@ -342,4 +564,17 @@ pub fn apply_spectrum_smoothing(
 
     // Return both the smoothed result and the updated previous spectrum
     (smoothed.clone(), smoothed)
+}
+
+/// Apply pink noise tilt compensation for perceptually flat response
+/// Modern analyzers use 4.5 dB/octave tilt to make pink noise appear flat
+pub fn apply_pink_noise_tilt(magnitude_db: f32, frequency_hz: f32) -> f32 {
+    if frequency_hz <= 0.0 {
+        return magnitude_db;
+    }
+    // Calculate octaves from 1kHz reference
+    let octaves_from_1khz = (frequency_hz / 1000.0).log2();
+    // Apply 4.5 dB/octave compensation
+    let tilt_compensation = 4.5 * octaves_from_1khz;
+    magnitude_db + tilt_compensation
 }
