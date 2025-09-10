@@ -14,11 +14,6 @@ PLUGIN_NAME="plugin-learn"
 CLAP_DIR="/Library/Audio/Plug-Ins/CLAP"
 PLUGIN_CLAP="${PLUGIN_NAME}.clap"
 
-echo "🔨 Building plugin..."
-cargo xtask bundle $PLUGIN_NAME --release
-
-echo "✅ Build completed!"
-
 echo "🗑️  Removing old plugin if it exists..."
 if [ -d "$CLAP_DIR/$PLUGIN_CLAP" ]; then
     sudo rm -rf "$CLAP_DIR/$PLUGIN_CLAP"
@@ -26,6 +21,11 @@ if [ -d "$CLAP_DIR/$PLUGIN_CLAP" ]; then
 else
     echo "ℹ️  No existing plugin found"
 fi
+
+echo "🔨 Building plugin..."
+cargo xtask bundle $PLUGIN_NAME --release
+
+echo "✅ Build completed!"
 
 echo "📦 Installing new plugin..."
 sudo cp -r "./target/bundled/$PLUGIN_CLAP" "$CLAP_DIR/"
@@ -49,12 +49,9 @@ tmux new-session -d -s $SESSION_NAME -n main
 tmux split-window -h -t $SESSION_NAME:main
 
 # Left pane: Start Bitwig
-tmux send-keys -t $SESSION_NAME:main.0 'echo "🎵 Starting Bitwig Studio..."' Enter
 tmux send-keys -t $SESSION_NAME:main.0 'NIH_LOG='$LOG_FILE' "/Applications/Bitwig Studio.app/Contents/MacOS/BitwigStudio"' Enter
 
 # Right pane: Monitor logs
-tmux send-keys -t $SESSION_NAME:main.1 'echo "📋 Monitoring NIH-plug logs..."' Enter
-tmux send-keys -t $SESSION_NAME:main.1 'echo "Waiting for log file..."' Enter
 tmux send-keys -t $SESSION_NAME:main.1 'while [ ! -f '$LOG_FILE' ]; do sleep 1; done && tail -f '$LOG_FILE Enter
 
 # Focus on left pane (Bitwig)
