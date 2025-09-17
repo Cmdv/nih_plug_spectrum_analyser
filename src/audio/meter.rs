@@ -1,6 +1,8 @@
 use atomic_float::AtomicF32;
 use nih_plug::prelude::*;
 use std::sync::{atomic::Ordering, Arc};
+use std::convert::TryFrom;
+use super::errors::{MeterError, MeterResult};
 
 /// Smoothing factors for level meters
 /// These values are calibrated to match professional meter behavior
@@ -12,6 +14,65 @@ const PEAK_HOLD_CYCLES: u32 = 60;
 
 /// Silence threshold - below this level, trigger faster decay
 const SILENCE_THRESHOLD_DB: f32 = -50.0;
+
+/// Silence detection delay in frames before applying fast decay
+const SILENCE_DECAY_DELAY_FRAMES: u32 = 30;  // About 0.5 seconds at 60fps
+
+/// Linear decay rate for silence (dB per frame)
+const SILENCE_DECAY_RATE_DB_PER_FRAME: f32 = 0.5;
+
+/// Minimum level before setting to -inf (silence floor)
+const METER_FLOOR_DB: f32 = -80.0;
+
+/// Peak levels for stereo audio
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PeakLevels {
+    pub left_db: f32,
+    pub right_db: f32,
+}
+
+impl<'a> TryFrom<&'a Buffer<'a>> for PeakLevels {
+    type Error = MeterError;
+
+    /// Try to extract peak levels from an audio buffer
+    ///
+    /// # Errors
+    /// Returns `MeterError::NoChannels` if the buffer has no audio channels
+    fn try_from(buffer: &'a Buffer<'a>) -> Result<Self, Self::Error> {
+        let num_channels = buffer.channels();
+        if num_channels == 0 {
+            return Err(MeterError::NoChannels);
+        }
+
+        let channel_slices = buffer.as_slice_immutable();
+        let mut left_peak = util::MINUS_INFINITY_DB;
+        let mut right_peak = util::MINUS_INFINITY_DB;
+
+        // Calculate peak for left channel (or mono)
+        if num_channels >= 1 {
+            left_peak = channel_slices[0]
+                .iter()
+                .map(|&sample| util::gain_to_db(sample.abs()))
+                .fold(left_peak, f32::max);
+        }
+
+        // Calculate peak for right channel
+        if num_channels >= 2 {
+            right_peak = channel_slices[1]
+                .iter()
+                .map(|&sample| util::gain_to_db(sample.abs()))
+                .fold(right_peak, f32::max);
+        } else {
+            // Mono: use left channel for both
+            right_peak = left_peak;
+        }
+
+        Ok(PeakLevels {
+            left_db: left_peak,
+            right_db: right_peak,
+        })
+    }
+}
 
 /// Meter data sent from audio thread to UI thread
 #[derive(Clone)]
@@ -26,11 +87,16 @@ impl MeterProducer {
     /// Update peak levels from audio buffer (called from audio thread)
     /// Must be real-time safe - no allocations or locks
     pub fn update_peaks(&self, buffer: &Buffer) {
-        let (left_peak, right_peak) = calculate_peak_levels(buffer);
+        // Use TryFrom to get peak levels, falling back to silence on error
+        let peaks = PeakLevels::try_from(buffer)
+            .unwrap_or(PeakLevels {
+                left_db: util::MINUS_INFINITY_DB,
+                right_db: util::MINUS_INFINITY_DB,
+            });
 
         // Update atomic values (lock-free communication to UI thread)
-        self.peak_left.store(left_peak, Ordering::Relaxed);
-        self.peak_right.store(right_peak, Ordering::Relaxed);
+        self.peak_left.store(peaks.left_db, Ordering::Relaxed);
+        self.peak_right.store(peaks.right_db, Ordering::Relaxed);
     }
 }
 
@@ -99,21 +165,36 @@ impl MeterConsumer {
     }
 
     /// Get smoothed levels for display (left, right)
-    pub fn get_smoothed_levels(&self) -> (f32, f32) {
-        if let Ok(state) = self.state.lock() {
-            (state.smoothed_left, state.smoothed_right)
-        } else {
-            (util::MINUS_INFINITY_DB, util::MINUS_INFINITY_DB)
-        }
+    #[must_use = "Meter levels should be used for display"]
+    pub fn get_smoothed_levels(&self) -> MeterResult<(f32, f32)> {
+        self.state
+            .lock()
+            .map(|state| (state.smoothed_left, state.smoothed_right))
+            .map_err(|_| MeterError::LockFailed)
+    }
+
+    /// Get smoothed levels with fallback to silence
+    /// Convenience method for when you want to always get data
+    #[must_use = "Meter levels should be used for display"]
+    pub fn get_smoothed_levels_or_silence(&self) -> (f32, f32) {
+        self.get_smoothed_levels()
+            .unwrap_or((util::MINUS_INFINITY_DB, util::MINUS_INFINITY_DB))
     }
 
     /// Get peak hold value (maximum of both channels)
-    pub fn get_peak_hold_db(&self) -> f32 {
-        if let Ok(state) = self.state.lock() {
-            state.peak_hold_value
-        } else {
-            util::MINUS_INFINITY_DB
-        }
+    #[must_use = "Peak hold value should be used for display"]
+    pub fn get_peak_hold_db(&self) -> MeterResult<f32> {
+        self.state
+            .lock()
+            .map(|state| state.peak_hold_value)
+            .map_err(|_| MeterError::LockFailed)
+    }
+
+    /// Get peak hold value with fallback to silence
+    /// Convenience method for when you want to always get data
+    #[must_use = "Peak hold value should be used for display"]
+    pub fn get_peak_hold_db_or_silence(&self) -> f32 {
+        self.get_peak_hold_db().unwrap_or(util::MINUS_INFINITY_DB)
     }
 
     /// Apply attack/release smoothing to meter levels
@@ -185,22 +266,19 @@ impl MeterConsumer {
             state.silence_counter += 1;
 
             // After a delay, apply faster linear decay to silence
-            if state.silence_counter > 30 {
-                // About 0.5 seconds at 60fps
+            if state.silence_counter > SILENCE_DECAY_DELAY_FRAMES {
                 // Use linear decay in dB space for smooth, predictable decay
-                let decay_rate = 0.5; // dB per frame - adjust for desired speed
-
                 // Apply linear decay in dB space
                 if state.smoothed_left > util::MINUS_INFINITY_DB {
-                    state.smoothed_left -= decay_rate;
-                    if state.smoothed_left < -80.0 {
+                    state.smoothed_left -= SILENCE_DECAY_RATE_DB_PER_FRAME;
+                    if state.smoothed_left < METER_FLOOR_DB {
                         state.smoothed_left = util::MINUS_INFINITY_DB;
                     }
                 }
 
                 if state.smoothed_right > util::MINUS_INFINITY_DB {
-                    state.smoothed_right -= decay_rate;
-                    if state.smoothed_right < -80.0 {
+                    state.smoothed_right -= SILENCE_DECAY_RATE_DB_PER_FRAME;
+                    if state.smoothed_right < METER_FLOOR_DB {
                         state.smoothed_right = util::MINUS_INFINITY_DB;
                     }
                 }
@@ -213,6 +291,7 @@ impl MeterConsumer {
 
 /// Factory function to create meter communication pair
 /// Returns (input for audio thread, output for UI thread)
+#[must_use = "Meter channels must be used"]
 pub fn create_meter_channels() -> (MeterProducer, MeterConsumer) {
     let meter_input = MeterProducer {
         peak_left: Arc::new(AtomicF32::new(util::MINUS_INFINITY_DB)),
@@ -227,48 +306,3 @@ pub fn create_meter_channels() -> (MeterProducer, MeterConsumer) {
     (meter_input, meter_output)
 }
 
-/// Calculate peak levels from audio buffer
-///
-/// Analyzes all channels in the buffer to find peak levels in dB.
-/// For mono sources, both left and right will have the same value.
-/// For stereo sources, returns independent left and right peaks.
-/// Returns (left_peak_db, right_peak_db) tuple.
-pub fn calculate_peak_levels(buffer: &Buffer) -> (f32, f32) {
-    let mut left_peak = util::MINUS_INFINITY_DB;
-    let mut right_peak = util::MINUS_INFINITY_DB;
-
-    let num_channels = buffer.channels();
-    if num_channels == 0 {
-        return (util::MINUS_INFINITY_DB, util::MINUS_INFINITY_DB);
-    }
-
-    // Get immutable access to channel slices
-    let channel_slices = buffer.as_slice_immutable();
-
-    // Calculate peak for left channel (or mono)
-    if num_channels >= 1 {
-        let left_channel = &channel_slices[0];
-        for &sample in left_channel.iter() {
-            let sample_db = util::gain_to_db(sample.abs());
-            if sample_db > left_peak {
-                left_peak = sample_db;
-            }
-        }
-    }
-
-    // Calculate peak for right channel
-    if num_channels >= 2 {
-        let right_channel = &channel_slices[1];
-        for &sample in right_channel.iter() {
-            let sample_db = util::gain_to_db(sample.abs());
-            if sample_db > right_peak {
-                right_peak = sample_db;
-            }
-        }
-    } else {
-        // Mono: use left channel for both
-        right_peak = left_peak;
-    }
-
-    (left_peak, right_peak)
-}

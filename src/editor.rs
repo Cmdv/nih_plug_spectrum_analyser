@@ -196,7 +196,7 @@ impl IcedEditor for PluginEditor {
         // Stack the canvases on top of each other
         let layered_spectrum = stack![spectrum_container, grid_canvas];
 
-        let db_display = create_db_display(self.editor_data.meter_output.get_peak_hold_db());
+        let db_display = create_db_display(self.editor_data.meter_output.get_peak_hold_db_or_silence());
         let meter_canvas = create_meter_canvas(&self.meter_display);
 
         // Compose layout using pure functions

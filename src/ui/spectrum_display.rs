@@ -42,7 +42,7 @@ impl<Message> Program<Message, Theme> for SpectrumDisplay {
         let background = Path::rectangle(Point::ORIGIN, bounds.size());
         frame.fill(&background, UITheme::BACKGROUND_MAIN);
 
-        // Draw spectrum curve using full canvas bounds (no margins needed now that grid is separate)
+        // Draw spectrum curve using full canvas bounds
         self.draw_spectrum(&mut frame, bounds.size());
 
         vec![frame.into_geometry()]
@@ -89,7 +89,7 @@ impl SpectrumDisplay {
 
     fn draw_spectrum(&self, frame: &mut Frame, size: Size) {
         // READ ONLY - Get latest spectrum data from audio thread
-        let spectrum_data = self.spectrum_output.read();
+        let spectrum_data = self.spectrum_output.read_or_silence();
 
         // Convert to Vec for compatibility with existing display code
         let smoothed_copy: Vec<f32> = spectrum_data.to_vec();
@@ -106,7 +106,7 @@ impl SpectrumDisplay {
         for i in 0..num_points {
             let mut point =
                 self.calculate_spectrum_point_for_display(i, num_points, &smoothed_copy, size);
-            // Shift all points down by 5 pixels - this pushes the floor line below the visible area
+            // Shift all points down by 1 pixels - this pushes the floor line below the visible area
             point.y += 1.0;
             points.push(point);
         }

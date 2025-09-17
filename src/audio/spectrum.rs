@@ -1,22 +1,67 @@
 use nih_plug::prelude::*;
 use realfft::{num_complex::Complex32, RealFftPlanner, RealToComplex};
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use triple_buffer::TripleBuffer;
 
+use super::errors::{SpectrumError, SpectrumResult};
 use super::window_functions::{AdaptiveWindowStrategy, AdaptiveWindows, WindowData};
 
 /// The size of our FFT analysis window
 /// 2048 gives us 23.4Hz resolution at 48kHz (good for 20Hz-20kHz range)
-pub const SPECTRUM_WINDOW_SIZE: usize = 2048;
+pub const SPECTRUM_WINDOW_SIZE: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(2048) };
+
+/// Legacy usize version for compatibility with existing code
+pub const SPECTRUM_WINDOW_SIZE_USIZE: usize = SPECTRUM_WINDOW_SIZE.get();
 
 /// Number of frequency bins produced by the FFT (N/2 + 1 for real FFT)
-pub const SPECTRUM_BINS: usize = SPECTRUM_WINDOW_SIZE / 2 + 1;
+pub const SPECTRUM_BINS: usize = SPECTRUM_WINDOW_SIZE_USIZE / 2 + 1;
 
 /// Pink noise tilt compensation in dB per octave to make spectrum appear flatter
 const SPECTRUM_TILT_DB_PER_OCT: f32 = 4.5;
 
 /// Spectrum analyser floor prevents log(0) in FFT calculations
 const SPECTRUM_FLOOR_DB: f32 = -120.0;
+
+/// FFT overlap factor for smoother spectrum updates (50% overlap)
+const FFT_OVERLAP_FACTOR: f32 = 0.5;
+
+/// Ring buffer size multiplier (2x for 50% overlap)
+const RING_BUFFER_SIZE_MULTIPLIER: usize = 2;
+
+/// Minimum amplitude threshold to avoid log(0) errors
+const MIN_AMPLITUDE_THRESHOLD: f32 = 1e-8;
+
+/// dB conversion factor (20 * log10)
+const DB_CONVERSION_FACTOR: f32 = 20.0;
+
+/// Reference frequency for tilt compensation (1kHz standard)
+const TILT_REFERENCE_FREQ_HZ: f32 = 1000.0;
+
+/// Minimum frequency threshold to avoid log(0) in tilt calculation
+const MIN_FREQ_THRESHOLD: f32 = 0.001;
+
+/// Debug logging frequency range bounds (for 1kHz region)
+const DEBUG_FREQ_LOWER_HZ: f32 = 950.0;
+const DEBUG_FREQ_UPPER_HZ: f32 = 1050.0;
+
+/// Frequency thresholds for smoothing regions
+const SMOOTHING_HIGH_FREQ_HZ: f32 = 5000.0;
+const SMOOTHING_MID_HIGH_FREQ_HZ: f32 = 2000.0;
+const SMOOTHING_MID_FREQ_HZ: f32 = 800.0;
+
+/// Smoothing kernel sizes for different frequency regions
+const HIGH_FREQ_KERNEL_SIZE: usize = 9;
+const MID_HIGH_FREQ_KERNEL_SIZE: usize = 7;
+
+/// Gaussian sigma values for smoothing weights
+const GAUSSIAN_SIGMA_STRONG: f32 = 1.0;  // For high frequency aggressive smoothing
+const GAUSSIAN_SIGMA_MODERATE: f32 = 2.0;  // For mid-high frequency smoothing
+
+/// Smoothing weights for 5-point mid frequency kernel
+const SMOOTH_WEIGHT_OUTER: f32 = 0.1;  // Weight for samples at ±2 positions
+const SMOOTH_WEIGHT_INNER: f32 = 0.2;  // Weight for samples at ±1 positions
+const SMOOTH_WEIGHT_CENTER: f32 = 0.4; // Weight for center sample
 
 /// The spectrum analyser's frequency data - array of magnitude values in dB
 pub type SpectrumData = [f32; SPECTRUM_BINS];
@@ -37,18 +82,26 @@ impl SpectrumConsumer {
 
     /// Read latest spectrum data for UI display
     /// Called from UI thread only
-    pub fn read(&self) -> SpectrumData {
-        if let Ok(mut output) = self.output.try_lock() {
-            *output.read()
-        } else {
-            // Return silence if unable to lock (shouldn't happen in normal operation)
-            [SPECTRUM_FLOOR_DB; SPECTRUM_BINS]
-        }
+    #[must_use]
+    pub fn read(&self) -> SpectrumResult<SpectrumData> {
+        self.output
+            .try_lock()
+            .map(|mut output| *output.read())
+            .map_err(|_| SpectrumError::LockFailed {
+                resource: "spectrum output".to_string(),
+            })
+    }
+
+    /// Read latest spectrum data with fallback to silence
+    /// Convenience method for when you want to always get data
+    #[must_use]
+    pub fn read_or_silence(&self) -> SpectrumData {
+        self.read().unwrap_or([SPECTRUM_FLOOR_DB; SPECTRUM_BINS])
     }
 }
 
 /// Spectrum analyser speed presets for temporal smoothing
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[allow(dead_code)]
 pub enum SpectrumSpeed {
     VerySlow,
@@ -99,33 +152,86 @@ pub struct SpectrumProducer {
     spectrum_producer: triple_buffer::Input<SpectrumData>,
     /// Speed setting for temporal smoothing
     speed: SpectrumSpeed,
+    /// Count of FFT failures (for debugging without impacting performance)
+    fft_failure_count: std::sync::atomic::AtomicU32,
 }
 
-impl SpectrumProducer {
-    /// Create a new spectrum analyser and output pair
-    /// Returns (analyser for audio thread, output for UI thread)
-    pub fn new() -> (Self, SpectrumConsumer) {
+/// Builder for configuring SpectrumProducer initialization
+pub struct SpectrumProducerBuilder {
+    window_size: NonZeroUsize,
+    speed: SpectrumSpeed,
+    window_strategy: Option<AdaptiveWindowStrategy>,
+}
+
+impl Default for SpectrumProducerBuilder {
+    fn default() -> Self {
+        Self {
+            window_size: SPECTRUM_WINDOW_SIZE,
+            speed: SpectrumSpeed::Medium,
+            window_strategy: None,
+        }
+    }
+}
+
+impl SpectrumProducerBuilder {
+    /// Create a new builder with default settings
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set the FFT window size (must be power of 2)
+    #[must_use = "Builder methods must be chained"]
+    #[allow(dead_code)]
+    pub fn window_size(mut self, size: NonZeroUsize) -> Self {
+        debug_assert!(size.is_power_of_two(), "Window size must be power of 2");
+        self.window_size = size;
+        self
+    }
+
+    /// Set the spectrum speed (temporal smoothing)
+    #[must_use = "Builder methods must be chained"]
+    pub fn speed(mut self, speed: SpectrumSpeed) -> Self {
+        self.speed = speed;
+        self
+    }
+
+    /// Set a custom window strategy
+    #[must_use = "Builder methods must be chained"]
+    #[allow(dead_code)]
+    pub fn window_strategy(mut self, strategy: AdaptiveWindowStrategy) -> Self {
+        self.window_strategy = Some(strategy);
+        self
+    }
+
+    /// Build the SpectrumProducer and consumer pair
+    #[must_use = "SpectrumProducer and consumer must be used"]
+    pub fn build(self) -> (SpectrumProducer, SpectrumConsumer) {
+        // For now, we keep the window size fixed to SPECTRUM_WINDOW_SIZE
+        // Future enhancement: support dynamic window sizes
+        assert_eq!(self.window_size.get(), SPECTRUM_WINDOW_SIZE_USIZE,
+                   "Dynamic window sizes not yet supported");
+
         // Create lock-free communication channel
         let (spectrum_producer, spectrum_consumer) =
             TripleBuffer::new(&[SPECTRUM_FLOOR_DB; SPECTRUM_BINS]).split();
 
         // Initialize FFT processor
         let mut fft_planner = RealFftPlanner::<f32>::new();
-        let fft_processor = fft_planner.plan_fft_forward(SPECTRUM_WINDOW_SIZE);
+        let fft_processor = fft_planner.plan_fft_forward(SPECTRUM_WINDOW_SIZE_USIZE);
 
-        // Initialize adaptive window strategy
-        let window_strategy = AdaptiveWindowStrategy::default();
+        // Use provided strategy or default
+        let window_strategy = self.window_strategy.unwrap_or_default();
 
         // Pre-compute windows for different frequency ranges
         let low_coeffs = window_strategy
             .low_freq_window
-            .generate(SPECTRUM_WINDOW_SIZE);
+            .generate(SPECTRUM_WINDOW_SIZE_USIZE);
         let mid_coeffs = window_strategy
             .mid_freq_window
-            .generate(SPECTRUM_WINDOW_SIZE);
+            .generate(SPECTRUM_WINDOW_SIZE_USIZE);
         let high_coeffs = window_strategy
             .high_freq_window
-            .generate(SPECTRUM_WINDOW_SIZE);
+            .generate(SPECTRUM_WINDOW_SIZE_USIZE);
 
         let adaptive_windows = AdaptiveWindows {
             low_freq: WindowData {
@@ -142,28 +248,41 @@ impl SpectrumProducer {
             },
         };
 
-        // TODO: Implement dynamic window size calculation based on sample rate
-        // spectrum-analyser uses: window_size = sample_rate / frequency_resolution
-        // This gives better frequency resolution at different sample rates
-        // Example: 48000 Hz / 23.4 Hz = 2048 samples (current fixed size)
-
-        let analyser = Self {
+        let analyser = SpectrumProducer {
             fft_processor,
             window_strategy,
             adaptive_windows,
-            ring_buffer: vec![0.0; SPECTRUM_WINDOW_SIZE * 2], // 2x size for overlap
+            ring_buffer: vec![0.0; SPECTRUM_WINDOW_SIZE_USIZE * RING_BUFFER_SIZE_MULTIPLIER], // 2x size for overlap
             ring_buffer_pos: 0,
             samples_since_fft: 0,
-            time_domain_buffer: vec![0.0; SPECTRUM_WINDOW_SIZE],
+            time_domain_buffer: vec![0.0; SPECTRUM_WINDOW_SIZE_USIZE],
             frequency_domain_buffer: vec![Complex32::new(0.0, 0.0); SPECTRUM_BINS],
             spectrum_result: [SPECTRUM_FLOOR_DB; SPECTRUM_BINS],
             previous_spectrum: [SPECTRUM_FLOOR_DB; SPECTRUM_BINS],
             spectrum_producer,
-            speed: SpectrumSpeed::Medium, // Default to balanced Medium speed
+            speed: self.speed,
+            fft_failure_count: std::sync::atomic::AtomicU32::new(0),
         };
 
         (analyser, SpectrumConsumer::new(spectrum_consumer))
     }
+}
+
+impl SpectrumProducer {
+    /// Create a new builder for configuring SpectrumProducer
+    #[must_use = "Builder must be configured and built"]
+    pub fn builder() -> SpectrumProducerBuilder {
+        SpectrumProducerBuilder::new()
+    }
+
+    /// Get the count of FFT failures (for debugging)
+    /// Can be safely called from UI thread
+    #[allow(dead_code)]
+    pub fn fft_failure_count(&self) -> u32 {
+        self.fft_failure_count.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+
 
     /// Compute spectrum from audio buffer and send to UI thread
     /// Called from audio thread - must be real-time safe (no allocations)
@@ -172,7 +291,7 @@ impl SpectrumProducer {
         self.add_samples_to_ring_buffer(buffer);
 
         // Check if we should process FFT (50% overlap = every WINDOW_SIZE/2 samples)
-        if self.samples_since_fft >= SPECTRUM_WINDOW_SIZE / 2 {
+        if self.samples_since_fft >= (SPECTRUM_WINDOW_SIZE_USIZE as f32 * FFT_OVERLAP_FACTOR) as usize {
             self.samples_since_fft = 0;
 
             // Copy from ring buffer to FFT buffer
@@ -187,6 +306,8 @@ impl SpectrumProducer {
                 &mut self.frequency_domain_buffer,
             ) {
                 // FFT failed - skip this frame to maintain real-time safety
+                // Just increment counter for debugging, no logging in audio thread
+                self.fft_failure_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 return;
             }
 
@@ -211,22 +332,20 @@ impl SpectrumProducer {
 
         let channel_slices = buffer.as_slice_immutable();
 
-        for sample_idx in 0..num_samples {
-            // Sum all channels for mono mix
-            let mut sample_sum = 0.0f32;
-            for channel_idx in 0..num_channels {
-                sample_sum += channel_slices[channel_idx][sample_idx];
-            }
+        (0..num_samples).for_each(|sample_idx| {
+            // Sum all channels for mono mix using iterator
+            let mono_sample = channel_slices
+                .iter()
+                .map(|channel| channel[sample_idx])
+                .sum::<f32>() / num_channels as f32;
 
-            // Normalize by channel count and add to ring buffer
-            let mono_sample = sample_sum / num_channels as f32;
+            // Add to ring buffer
             self.ring_buffer[self.ring_buffer_pos] = mono_sample;
 
             // Advance ring buffer position (wrap around)
             self.ring_buffer_pos = (self.ring_buffer_pos + 1) % self.ring_buffer.len();
-
             self.samples_since_fft += 1;
-        }
+        });
     }
 
     /// Copy most recent SPECTRUM_WINDOW_SIZE samples from ring buffer to FFT buffer
@@ -234,17 +353,20 @@ impl SpectrumProducer {
         let ring_len = self.ring_buffer.len();
 
         // Start position: current pos minus window size
-        let start_pos = if self.ring_buffer_pos >= SPECTRUM_WINDOW_SIZE {
-            self.ring_buffer_pos - SPECTRUM_WINDOW_SIZE
+        let start_pos = if self.ring_buffer_pos >= SPECTRUM_WINDOW_SIZE_USIZE {
+            self.ring_buffer_pos - SPECTRUM_WINDOW_SIZE_USIZE
         } else {
-            ring_len - (SPECTRUM_WINDOW_SIZE - self.ring_buffer_pos)
+            ring_len - (SPECTRUM_WINDOW_SIZE_USIZE - self.ring_buffer_pos)
         };
 
-        // Copy samples (handle wrap-around)
-        for i in 0..SPECTRUM_WINDOW_SIZE {
-            let ring_idx = (start_pos + i) % ring_len;
-            self.time_domain_buffer[i] = self.ring_buffer[ring_idx];
-        }
+        // Copy samples (handle wrap-around) using iterators
+        self.time_domain_buffer
+            .iter_mut()
+            .enumerate()
+            .for_each(|(i, sample)| {
+                let ring_idx = (start_pos + i) % ring_len;
+                *sample = self.ring_buffer[ring_idx];
+            });
     }
 
     /// Apply windowing in-place to time domain buffer
@@ -284,7 +406,7 @@ impl SpectrumProducer {
         // Convert to magnitude spectrum
         compute_magnitude_spectrum(
             &freq_buffer,
-            SPECTRUM_WINDOW_SIZE,
+            SPECTRUM_WINDOW_SIZE_USIZE,
             coherent_gain,
             sample_rate,
         )
@@ -326,7 +448,7 @@ impl SpectrumProducer {
             &mid_spectrum,
             &high_spectrum,
             sample_rate,
-            SPECTRUM_WINDOW_SIZE,
+            SPECTRUM_WINDOW_SIZE_USIZE,
         )
     }
 
@@ -440,8 +562,8 @@ pub fn compute_magnitude_spectrum(
             let amplitude = magnitude * scaling / window_coherent_gain;
 
             // Convert to dBFS according to AES17 standard (spectrum.md)
-            let db_value = if amplitude > 1e-8 {
-                20.0 * amplitude.log10()
+            let db_value = if amplitude > MIN_AMPLITUDE_THRESHOLD {
+                DB_CONVERSION_FACTOR * amplitude.log10()
             } else {
                 SPECTRUM_FLOOR_DB
             };
@@ -449,7 +571,7 @@ pub fn compute_magnitude_spectrum(
             let freq_hz = (bin_idx as f32 * sample_rate) / window_size as f32;
 
             // Debug logging for 1kHz region
-            if freq_hz >= 950.0 && freq_hz <= 1050.0 && amplitude > 1e-8 {
+            if freq_hz >= DEBUG_FREQ_LOWER_HZ && freq_hz <= DEBUG_FREQ_UPPER_HZ && amplitude > MIN_AMPLITUDE_THRESHOLD {
                 nih_plug::nih_log!("FFT bin {}: freq={:.1}Hz, magnitude={:.6}, scaling={:.6}, coherent_gain={:.6}, amplitude={:.6}, db={:.1}dB",
                     bin_idx, freq_hz, magnitude, scaling, window_coherent_gain, amplitude, db_value);
             }
@@ -484,18 +606,15 @@ pub fn compute_magnitude_spectrum(
 /// Octaves from reference: log2(freq/ref_freq)
 /// Tilt boost: tilt_per_octave * octaves_from_reference
 fn apply_tilt_compensation(magnitude_db: f32, freq_hz: f32, tilt_db_per_oct: f32) -> f32 {
-    // Use 1kHz as reference frequency (standard in audio)
-    const REFERENCE_FREQ: f32 = 1000.0;
-
     // Avoid log(0) for DC bin
-    if freq_hz < 0.001 {
+    if freq_hz < MIN_FREQ_THRESHOLD {
         return magnitude_db;
     }
 
     // Calculate octaves from reference frequency
     // log2(2000/1000) = 1 octave up
     // log2(500/1000) = -1 octave down
-    let octaves_from_reference = libm::log2f(freq_hz / REFERENCE_FREQ);
+    let octaves_from_reference = libm::log2f(freq_hz / TILT_REFERENCE_FREQ_HZ);
 
     // Apply tilt: positive above 1kHz, negative below
     magnitude_db + (tilt_db_per_oct * octaves_from_reference)
@@ -542,8 +661,8 @@ pub fn apply_spectrum_smoothing(
     sample_rate: f32,
 ) -> (Vec<f32>, Vec<f32>) {
     // Calculate FFT frame rate (with 50% overlap)
-    // FFT happens every WINDOW_SIZE/2 samples
-    let fft_frame_rate = sample_rate / (SPECTRUM_WINDOW_SIZE as f32 / 2.0);
+    // FFT happens every WINDOW_SIZE * FFT_OVERLAP_FACTOR samples
+    let fft_frame_rate = sample_rate / (SPECTRUM_WINDOW_SIZE_USIZE as f32 * FFT_OVERLAP_FACTOR);
 
     // Get time constants for selected speed
     let (attack_ms, release_ms) = speed.time_constants_ms();
@@ -580,15 +699,15 @@ pub fn apply_spectrum_smoothing(
 /// Based on professional spectrum analyser smoothing strategies.
 pub fn apply_frequency_dependent_smoothing(spectrum: &[f32], sample_rate: f32) -> Vec<f32> {
     let mut smoothed = spectrum.to_vec();
-    let window_size = SPECTRUM_WINDOW_SIZE;
+    let window_size = SPECTRUM_WINDOW_SIZE_USIZE;
 
     // Apply frequency-dependent smoothing kernel
     for i in 1..spectrum.len() - 1 {
         let freq = (i as f32 * sample_rate) / window_size as f32;
 
-        if freq > 5000.0 {
+        if freq > SMOOTHING_HIGH_FREQ_HZ {
             // High frequencies (>5kHz): Very aggressive 9-point smoothing
-            let kernel_size = (9_usize).min(spectrum.len() - 1);
+            let kernel_size = HIGH_FREQ_KERNEL_SIZE.min(spectrum.len() - 1);
             let half_kernel = kernel_size / 2;
             let start_idx = i.saturating_sub(half_kernel);
             let end_idx = (i + half_kernel).min(spectrum.len() - 1);
@@ -599,7 +718,7 @@ pub fn apply_frequency_dependent_smoothing(spectrum: &[f32], sample_rate: f32) -
             // Very strong Gaussian weighting for aggressive smoothing
             for j in start_idx..=end_idx {
                 let distance = (j as i32 - i as i32).abs() as f32;
-                let weight = (-distance * distance / 1.0).exp(); // Stronger Gaussian (smaller sigma)
+                let weight = (-distance * distance / GAUSSIAN_SIGMA_STRONG).exp(); // Stronger Gaussian (smaller sigma)
                 sum += spectrum[j] * weight;
                 weight_sum += weight;
             }
@@ -607,9 +726,9 @@ pub fn apply_frequency_dependent_smoothing(spectrum: &[f32], sample_rate: f32) -
             if weight_sum > 0.0 {
                 smoothed[i] = sum / weight_sum;
             }
-        } else if freq > 2000.0 {
+        } else if freq > SMOOTHING_MID_HIGH_FREQ_HZ {
             // Mid-high frequencies (2-5kHz): 7-point smoothing
-            let kernel_size = (7_usize).min(spectrum.len() - 1);
+            let kernel_size = MID_HIGH_FREQ_KERNEL_SIZE.min(spectrum.len() - 1);
             let half_kernel = kernel_size / 2;
             let start_idx = i.saturating_sub(half_kernel);
             let end_idx = (i + half_kernel).min(spectrum.len() - 1);
@@ -619,7 +738,7 @@ pub fn apply_frequency_dependent_smoothing(spectrum: &[f32], sample_rate: f32) -
 
             for j in start_idx..=end_idx {
                 let distance = (j as i32 - i as i32).abs() as f32;
-                let weight = (-distance * distance / 2.0).exp();
+                let weight = (-distance * distance / GAUSSIAN_SIGMA_MODERATE).exp();
                 sum += spectrum[j] * weight;
                 weight_sum += weight;
             }
@@ -627,7 +746,7 @@ pub fn apply_frequency_dependent_smoothing(spectrum: &[f32], sample_rate: f32) -
             if weight_sum > 0.0 {
                 smoothed[i] = sum / weight_sum;
             }
-        } else if freq > 800.0 {
+        } else if freq > SMOOTHING_MID_FREQ_HZ {
             // Mid frequencies (800Hz-2kHz): 5-point smoothing
             let prev2 = spectrum.get(i.saturating_sub(2)).unwrap_or(&spectrum[i]);
             let prev = spectrum[i - 1];
@@ -635,7 +754,7 @@ pub fn apply_frequency_dependent_smoothing(spectrum: &[f32], sample_rate: f32) -
             let next = spectrum[i + 1];
             let next2 = spectrum.get(i + 2).unwrap_or(&spectrum[i]);
 
-            smoothed[i] = prev2 * 0.1 + prev * 0.2 + curr * 0.4 + next * 0.2 + next2 * 0.1;
+            smoothed[i] = prev2 * SMOOTH_WEIGHT_OUTER + prev * SMOOTH_WEIGHT_INNER + curr * SMOOTH_WEIGHT_CENTER + next * SMOOTH_WEIGHT_INNER + next2 * SMOOTH_WEIGHT_OUTER;
         }
         // Leave frequencies < 1kHz unchanged for maximum detail
     }

@@ -65,7 +65,7 @@ impl MeterDisplay {
         self.meter_output.update();
 
         // Get smoothed levels for LED display
-        let (smooth_left, smooth_right) = self.meter_output.get_smoothed_levels();
+        let (smooth_left, smooth_right) = self.meter_output.get_smoothed_levels_or_silence();
 
         // Draw level bars with consistent gap
         let channel_gap = 1.0; // Same as LED gap

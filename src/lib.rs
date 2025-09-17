@@ -36,7 +36,13 @@ struct SAPluginParams {}
 impl Default for SAPlugin {
     fn default() -> Self {
         let sample_rate = Arc::new(AtomicF32::new(44100.0));
-        let (audio_spectrum_producer, ui_spectrum_consumer) = SpectrumProducer::new();
+
+        // Use the builder pattern to configure the spectrum analyzer
+        // This demonstrates how to customize the analyzer settings
+        let (audio_spectrum_producer, ui_spectrum_consumer) = SpectrumProducer::builder()
+            .speed(audio::spectrum::SpectrumSpeed::Medium)  // Default speed for balanced response
+            .build();
+
         let (audio_meter_producer, ui_meter_consumer) = create_meter_channels();
 
         Self {

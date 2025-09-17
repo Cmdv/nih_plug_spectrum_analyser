@@ -104,8 +104,6 @@ This is a learning project focused on:
 - Custom Iced widgets with Canvas
 - Functional programming in systems contexts
 
-See `CLAUDE.md` for AI assistant guidelines when working with this codebase.
-
 ## License
 
 TODO: Add license information

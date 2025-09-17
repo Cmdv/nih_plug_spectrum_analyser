@@ -52,7 +52,7 @@ pub struct AdaptiveWindows {
 }
 
 /// Window function types for FFT analysis
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum WindowType {
     /// Rectangular: No windowing, maximum frequency resolution
     #[allow(dead_code)]
@@ -107,16 +107,14 @@ impl WindowType {
 /// - Slightly wider peaks than rectangular (4 bins vs 2 bins)
 /// - Good general-purpose window for audio analysis
 pub fn generate_hann_window(window_size: usize) -> Vec<f32> {
-    let mut window = Vec::with_capacity(window_size);
     let window_size_f32 = window_size as f32;
 
-    for i in 0..window_size {
-        let position = i as f32 / window_size_f32;
-        let coefficient = 0.5 * (1.0 - cosf(2.0 * PI * position));
-        window.push(coefficient);
-    }
-
-    window
+    (0..window_size)
+        .map(|i| {
+            let position = i as f32 / window_size_f32;
+            0.5 * (1.0 - cosf(2.0 * PI * position))
+        })
+        .collect()
 }
 
 /// Generates Hamming window coefficients for improved sidelobe suppression
@@ -136,16 +134,14 @@ pub fn generate_hann_window(window_size: usize) -> Vec<f32> {
 /// - Good for harmonic analysis where sidelobe rejection matters
 /// - Preferred when frequency accuracy more important than amplitude accuracy
 pub fn generate_hamming_window(window_size: usize) -> Vec<f32> {
-    let mut window = Vec::with_capacity(window_size);
     let window_size_f32 = window_size as f32;
 
-    for i in 0..window_size {
-        let position = i as f32 / window_size_f32;
-        let coefficient = 0.54 - 0.46 * cosf(2.0 * PI * position);
-        window.push(coefficient);
-    }
-
-    window
+    (0..window_size)
+        .map(|i| {
+            let position = i as f32 / window_size_f32;
+            0.54 - 0.46 * cosf(2.0 * PI * position)
+        })
+        .collect()
 }
 
 /// Generates Blackman window coefficients for excellent sidelobe suppression
@@ -164,16 +160,14 @@ pub fn generate_hamming_window(window_size: usize) -> Vec<f32> {
 /// - When you need clean spectrum display
 /// - Trade frequency resolution for cleaner appearance
 pub fn generate_blackman_window(window_size: usize) -> Vec<f32> {
-    let mut window = Vec::with_capacity(window_size);
     let window_size_f32 = window_size as f32;
 
-    for i in 0..window_size {
-        let position = i as f32 / window_size_f32;
-        let coefficient = 0.42 - 0.5 * cosf(2.0 * PI * position) + 0.08 * cosf(4.0 * PI * position);
-        window.push(coefficient);
-    }
-
-    window
+    (0..window_size)
+        .map(|i| {
+            let position = i as f32 / window_size_f32;
+            0.42 - 0.5 * cosf(2.0 * PI * position) + 0.08 * cosf(4.0 * PI * position)
+        })
+        .collect()
 }
 
 /// Adaptive window selector based on frequency analysis goals
