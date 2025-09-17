@@ -2,7 +2,7 @@ use atomic_float::AtomicF32;
 use nih_plug::prelude::*;
 use std::sync::{atomic::Ordering, Arc};
 
-/// Smoothing factors for level meters (Pro-Q style behavior)
+/// Smoothing factors for level meters
 /// These values are calibrated to match professional meter behavior
 const METER_ATTACK: f32 = 0.3; // Moderate attack (not too jumpy)
 const METER_RELEASE: f32 = 0.001; // Ultra slow release for natural decay
@@ -15,14 +15,14 @@ const SILENCE_THRESHOLD_DB: f32 = -50.0;
 
 /// Meter data sent from audio thread to UI thread
 #[derive(Clone)]
-pub struct MeterInput {
+pub struct MeterProducer {
     /// Atomic peak levels for left and right channels
     /// Audio thread writes to these, UI thread reads from them
     pub peak_left: Arc<AtomicF32>,
     pub peak_right: Arc<AtomicF32>,
 }
 
-impl MeterInput {
+impl MeterProducer {
     /// Update peak levels from audio buffer (called from audio thread)
     /// Must be real-time safe - no allocations or locks
     pub fn update_peaks(&self, buffer: &Buffer) {
@@ -55,17 +55,17 @@ struct MeterState {
 
 /// Meter processor for UI thread - handles smoothing and peak hold
 #[derive(Clone)]
-pub struct MeterOutput {
+pub struct MeterConsumer {
     /// Reference to atomic peak values updated by audio thread
-    meter_input: MeterInput,
+    meter_input: MeterProducer,
 
     /// Shared internal state for smoothing and peak hold
     state: Arc<std::sync::Mutex<MeterState>>,
 }
 
-impl MeterOutput {
+impl MeterConsumer {
     /// Create new meter output processor
-    fn new(meter_input: MeterInput) -> Self {
+    fn new(meter_input: MeterProducer) -> Self {
         let mut initial_state = MeterState::default();
         initial_state.smoothed_left = util::MINUS_INFINITY_DB;
         initial_state.smoothed_right = util::MINUS_INFINITY_DB;
@@ -213,13 +213,13 @@ impl MeterOutput {
 
 /// Factory function to create meter communication pair
 /// Returns (input for audio thread, output for UI thread)
-pub fn create_meter_channels() -> (MeterInput, MeterOutput) {
-    let meter_input = MeterInput {
+pub fn create_meter_channels() -> (MeterProducer, MeterConsumer) {
+    let meter_input = MeterProducer {
         peak_left: Arc::new(AtomicF32::new(util::MINUS_INFINITY_DB)),
         peak_right: Arc::new(AtomicF32::new(util::MINUS_INFINITY_DB)),
     };
 
-    let meter_output = MeterOutput::new(MeterInput {
+    let meter_output = MeterConsumer::new(MeterProducer {
         peak_left: meter_input.peak_left.clone(),
         peak_right: meter_input.peak_right.clone(),
     });

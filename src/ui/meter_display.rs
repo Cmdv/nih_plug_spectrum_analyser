@@ -1,4 +1,4 @@
-use crate::audio::meter_communication::MeterOutput;
+use crate::audio::meter::MeterConsumer;
 use crate::ui::UITheme;
 use nih_plug_iced::widget::canvas::{
     fill::Rule, gradient::Linear, Fill, Frame, Geometry, Gradient, Path, Program, Style,
@@ -17,14 +17,14 @@ pub enum Channel {
 }
 
 /// Pure meter display component - no processing logic
-/// Reads meter data from MeterOutput communication channel
+/// Reads meter data from MeterConsumer communication channel
 pub struct MeterDisplay {
     /// Communication channel from audio thread
-    meter_output: MeterOutput,
+    meter_output: MeterConsumer,
 }
 
 impl MeterDisplay {
-    pub fn new(meter_output: MeterOutput) -> Self {
+    pub fn new(meter_output: MeterConsumer) -> Self {
         Self { meter_output }
     }
 }
@@ -45,7 +45,7 @@ impl<Message> Program<Message, Theme> for MeterDisplay {
         // Draw meter background
         self.draw_meter_background(&mut frame, bounds.size());
 
-        // Draw level bars with gradient (Pro-Q style)
+        // Draw level bars with gradient
         self.draw_level_bars(&mut frame, bounds.size());
 
         vec![frame.into_geometry()]
@@ -61,7 +61,7 @@ impl MeterDisplay {
 
     fn draw_level_bars(&self, frame: &mut Frame, size: Size) {
         // UPDATE - Process latest meter data from audio thread
-        // The MeterOutput handles smoothing and peak hold in the UI thread
+        // The MeterConsumer handles smoothing and peak hold in the UI thread
         self.meter_output.update();
 
         // Get smoothed levels for LED display
@@ -176,7 +176,7 @@ pub fn calculate_led_position(
 /// Create gradient for meter LED visualization
 ///
 /// Generates a linear gradient from green (bottom) through yellow to red (top),
-/// matching professional audio meter color schemes like Pro-Q.
+/// matching professional audio meter color schemes.
 pub fn create_meter_gradient(start_point: Point, end_point: Point) -> Linear {
     Linear::new(start_point, end_point)
         .add_stop(

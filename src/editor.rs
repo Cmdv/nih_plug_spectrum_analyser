@@ -1,22 +1,19 @@
-use crate::audio::meter_communication::MeterOutput;
-use crate::audio::spectrum_analyzer::SpectrumOutput;
-use crate::ui::{GainKnobDisplay, MeterDisplay, SpectrumDisplay, UITheme};
-use crate::PluginLearnParams;
+use crate::audio::meter::MeterConsumer;
+use crate::audio::spectrum::SpectrumConsumer;
+use crate::ui::{GridOverlay, MeterDisplay, SpectrumDisplay, UITheme};
 
 use atomic_float::AtomicF32;
 use nih_plug::context::gui::GuiContext;
 use nih_plug_iced::executor::Default;
 use nih_plug_iced::futures::Subscription;
 use nih_plug_iced::widget::canvas::Canvas;
-use nih_plug_iced::widget::{column, container, row, text};
-use nih_plug_iced::widgets::ParamSlider;
+use nih_plug_iced::widget::{column, container, row, stack, text};
+use nih_plug_iced::Padding;
 use nih_plug_iced::{alignment::Horizontal, Element, IcedEditor, Length, Renderer, Task, Theme};
 use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub enum Message {
-    /// Update a parameter's value.
-    ParamUpdate(nih_plug_iced::widgets::ParamMessage),
     /// Timer tick for regular redraws
     Tick,
 }
@@ -25,23 +22,19 @@ pub enum Message {
 /// Contains all data needed for the editor UI thread
 #[derive(Clone)]
 pub struct EditorData {
-    /// PARAMETER ACCESS
-    pub params: Arc<PluginLearnParams>,
-
     /// AUDIO STATE - Read-only from UI
     pub sample_rate: Arc<AtomicF32>,
 
     /// DISPLAY DATA - Separated communication channels
-    pub spectrum_output: SpectrumOutput,
-    pub meter_output: MeterOutput,
+    pub spectrum_output: SpectrumConsumer,
+    pub meter_output: MeterConsumer,
 }
 
 #[derive(Clone)]
 pub struct EditorInitFlags {
-    pub params: Arc<PluginLearnParams>,
     pub sample_rate: Arc<AtomicF32>,
-    pub spectrum_output: SpectrumOutput,
-    pub meter_output: MeterOutput,
+    pub spectrum_output: SpectrumConsumer,
+    pub meter_output: MeterConsumer,
 }
 
 pub struct PluginEditor {
@@ -50,27 +43,20 @@ pub struct PluginEditor {
 
     /// DISPLAY COMPONENTS - Pure rendering
     spectrum_display: SpectrumDisplay,
+    grid_overlay: GridOverlay,
     meter_display: MeterDisplay,
-    knob_display: GainKnobDisplay,
 
     /// GUI CONTEXT
     context: Arc<dyn GuiContext>,
 }
 
-/// Create spectrum analyzer canvas widget
-pub fn create_spectrum_canvas(spectrum_display: &SpectrumDisplay) -> Canvas<&SpectrumDisplay, Message> {
+/// Create spectrum analyser canvas widget
+pub fn create_spectrum_canvas(
+    spectrum_display: &SpectrumDisplay,
+) -> Canvas<&SpectrumDisplay, Message> {
     Canvas::new(spectrum_display)
         .width(Length::FillPortion(6))
         .height(Length::Fill)
-}
-
-/// Create gain parameter slider widget
-pub fn create_gain_slider(params: &Arc<PluginLearnParams>) -> Element<'_, Message, Theme, Renderer> {
-    ParamSlider::new(&params.gain)
-        .width(Length::Fixed(UITheme::METER_WIDTH))
-        .height(Length::Fixed(UITheme::METER_WIDTH))
-        .map(Message::ParamUpdate)
-        .into()
 }
 
 /// Create dB value display text widget
@@ -90,14 +76,10 @@ pub fn create_meter_canvas(meter_display: &MeterDisplay) -> Canvas<&MeterDisplay
 
 /// Create right panel layout with knob and meter
 pub fn create_right_panel<'a>(
-    gain_slider: Element<'a, Message, Theme, Renderer>,
     db_display: Element<'a, Message, Theme, Renderer>,
     meter_canvas: Canvas<&'a MeterDisplay, Message>,
 ) -> Element<'a, Message, Theme, Renderer> {
     column![
-        container(gain_slider)
-            .width(Length::Fill)
-            .padding(UITheme::PADDING_SMALL),
         container(db_display)
             .width(Length::Fill)
             .align_x(Horizontal::Center)
@@ -110,14 +92,14 @@ pub fn create_right_panel<'a>(
     .into()
 }
 
-/// Create main layout container
-pub fn create_main_layout<'a>(
-    spectrum_canvas: Canvas<&'a SpectrumDisplay, Message>,
+/// Create main layout container with stacked canvases
+pub fn create_main_layout_with_stack<'a>(
+    layered_spectrum: nih_plug_iced::widget::Stack<'a, Message, Theme, Renderer>,
     right_panel: Element<'a, Message, Theme, Renderer>,
 ) -> Element<'a, Message, Theme, Renderer> {
     container(
         row![
-            container(spectrum_canvas)
+            container(layered_spectrum)
                 .width(Length::Fill)
                 .height(Length::Fill)
                 .style(UITheme::background_dark),
@@ -147,7 +129,6 @@ impl IcedEditor for PluginEditor {
     ) -> (Self, Task<Self::Message>) {
         // Create grouped editor data following Diopser pattern
         let editor_data = EditorData {
-            params: initialization_flags.params.clone(),
             sample_rate: initialization_flags.sample_rate,
             spectrum_output: initialization_flags.spectrum_output,
             meter_output: initialization_flags.meter_output,
@@ -159,8 +140,8 @@ impl IcedEditor for PluginEditor {
                 editor_data.spectrum_output.clone(),
                 editor_data.sample_rate.clone(),
             ),
+            grid_overlay: GridOverlay::new(),
             meter_display: MeterDisplay::new(editor_data.meter_output.clone()),
-            knob_display: GainKnobDisplay::new(editor_data.params.clone()),
 
             // GROUPED DATA
             editor_data,
@@ -176,10 +157,6 @@ impl IcedEditor for PluginEditor {
 
     fn update(&mut self, message: Self::Message) -> Task<Self::Message> {
         match message {
-            Message::ParamUpdate(message) => {
-                self.handle_param_message(message);
-                Task::none()
-            }
             Message::Tick => {
                 // Request a redraw by returning none
                 // The canvas will automatically redraw with latest spectrum data
@@ -205,13 +182,26 @@ impl IcedEditor for PluginEditor {
 
         // Create widgets using pure functions
         let spectrum_canvas = create_spectrum_canvas(&self.spectrum_display);
-        let gain_slider = create_gain_slider(&self.editor_data.params);
+
+        // Wrap spectrum canvas in container with bottom padding to stop before -100 line
+        let spectrum_container = container(spectrum_canvas)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .padding(Padding::default().bottom(30)); // 30px bottom padding
+
+        let grid_canvas = Canvas::new(&self.grid_overlay)
+            .width(Length::FillPortion(6))
+            .height(Length::Fill);
+
+        // Stack the canvases on top of each other
+        let layered_spectrum = stack![spectrum_container, grid_canvas];
+
         let db_display = create_db_display(self.editor_data.meter_output.get_peak_hold_db());
         let meter_canvas = create_meter_canvas(&self.meter_display);
 
         // Compose layout using pure functions
-        let right_panel = create_right_panel(gain_slider, db_display, meter_canvas);
-        create_main_layout(spectrum_canvas, right_panel)
+        let right_panel = create_right_panel(db_display, meter_canvas);
+        create_main_layout_with_stack(layered_spectrum, right_panel)
     }
 
     fn theme(&self) -> Self::Theme {

@@ -3,60 +3,54 @@ mod editor;
 mod ui;
 
 use atomic_float::AtomicF32;
-use audio::audio_engine;
-use audio::meter_communication::{create_meter_channels, MeterInput, MeterOutput};
-use audio::spectrum_analyzer::{SpectrumAnalyzer, SpectrumOutput};
+use audio::meter::{create_meter_channels, MeterConsumer, MeterProducer};
+use audio::spectrum::{SpectrumConsumer, SpectrumProducer};
 use editor::EditorInitFlags;
 use editor::PluginEditor;
 use nih_plug::prelude::*;
 use nih_plug_iced::{create_iced_editor, IcedState};
 use std::sync::{atomic::Ordering, Arc};
 
-struct PluginLearn {
-    // CORE PLUGIN COMPONENTS
-    params: Arc<PluginLearnParams>,
+struct SAPlugin {
+    // PLUGIN PARAMETERS (empty for now, but keeps the structure)
+    params: Arc<SAPluginParams>,
 
-    // SHARED STATE - Minimal
+    // SHARED STATE (thread-safe, read by both audio and UI)
     sample_rate: Arc<AtomicF32>,
 
-    // UI COMMUNICATION - Separated input/output channels
-    spectrum_analyzer: SpectrumAnalyzer, // Audio thread only
-    spectrum_output: SpectrumOutput,     // UI thread only
-    meter_input: MeterInput,             // Audio thread only
-    meter_output: MeterOutput,           // UI thread only
+    // AUDIO THREAD WRITERS (produce data)
+    audio_spectrum_producer: SpectrumProducer, // Writes spectrum data from audio thread
+    audio_meter_producer: MeterProducer,       // Writes meter levels from audio thread
+
+    // UI THREAD READERS (consume data)
+    ui_spectrum_consumer: SpectrumConsumer, // Reads spectrum data in UI thread
+    ui_meter_consumer: MeterConsumer,       // Reads meter levels in UI thread
 
     // UI STATE
     iced_state: Arc<IcedState>,
 }
 
 #[derive(Params)]
-struct PluginLearnParams {
-    /// The parameter's ID is used to identify the parameter in the wrapped plugin API. As long as
-    /// these IDs remain constant, you can rename and reorder these fields as you wish. The
-    /// parameters are exposed to the host in the same order they were defined. In this case, this
-    /// gain parameter is stored as linear gain while the values are displayed in decibels.
-    #[id = "gain"]
-    pub gain: FloatParam,
-}
+struct SAPluginParams {}
 
-impl Default for PluginLearn {
+impl Default for SAPlugin {
     fn default() -> Self {
         let sample_rate = Arc::new(AtomicF32::new(44100.0));
-        let (spectrum_analyzer, spectrum_output) = SpectrumAnalyzer::new();
-        let (meter_input, meter_output) = create_meter_channels();
+        let (audio_spectrum_producer, ui_spectrum_consumer) = SpectrumProducer::new();
+        let (audio_meter_producer, ui_meter_consumer) = create_meter_channels();
 
         Self {
             // CORE COMPONENTS
-            params: Arc::new(create_plugin_params(sample_rate.clone())),
+            params: Arc::new(SAPluginParams::default()),
 
             // SHARED STATE
             sample_rate,
 
-            // COMMUNICATION CHANNELS - Separated
-            spectrum_analyzer,
-            spectrum_output,
-            meter_input,
-            meter_output,
+            // AUDIO/UI COMMUNICATION
+            audio_spectrum_producer,
+            audio_meter_producer,
+            ui_spectrum_consumer,
+            ui_meter_consumer,
 
             // UI STATE
             iced_state: IcedState::from_size(800, 600),
@@ -64,45 +58,14 @@ impl Default for PluginLearn {
     }
 }
 
-/// Create plugin parameters with default gain configuration
-/// 
-/// Configures a logarithmic gain parameter with:
-/// - Range: -30dB to +30dB (stored as linear gain for efficiency)
-/// - 5ms smoothing to prevent artifacts during parameter changes
-/// - Skewed range for linear dB display behavior
-/// - Professional dB formatting for the UI
-fn create_plugin_params(_sample_rate: Arc<AtomicF32>) -> PluginLearnParams {
-    PluginLearnParams {
-        // Gain stored as linear value but displayed/controlled in dB
-        // This avoids per-sample dB conversion in the audio loop
-        gain: FloatParam::new(
-            "Gain",
-            util::db_to_gain(0.0), // 0dB = unity gain (1.0)
-            FloatRange::Skewed {
-                min: util::db_to_gain(-30.0),  // -30dB minimum
-                max: util::db_to_gain(30.0),   // +30dB maximum
-                // Makes the parameter feel linear when displayed as dB
-                factor: FloatRange::gain_skew_factor(-30.0, 30.0),
-            },
-        )
-        // Fast logarithmic smoothing (5ms) for responsive feel
-        // Logarithmic smoothing works better with gain parameters
-        .with_smoother(SmoothingStyle::Logarithmic(5.0))
-        .with_unit(" dB")
-        // Format internal linear gain as dB for display (2 decimal places)
-        .with_value_to_string(formatters::v2s_f32_gain_to_db(2))
-        .with_string_to_value(formatters::s2v_f32_gain_to_db()),
-    }
-}
-
-impl Default for PluginLearnParams {
+impl Default for SAPluginParams {
     fn default() -> Self {
-        create_plugin_params(Arc::new(AtomicF32::new(44100.0)))
+        SAPluginParams {}
     }
 }
 
-impl Plugin for PluginLearn {
-    const NAME: &'static str = "plugin-learn";
+impl Plugin for SAPlugin {
+    const NAME: &'static str = "spectrum_analyser";
     const VENDOR: &'static str = "Cmdv";
     const URL: &'static str = env!("CARGO_PKG_HOMEPAGE");
     const EMAIL: &'static str = "info@cmdv.me";
@@ -172,28 +135,19 @@ impl Plugin for PluginLearn {
         _aux: &mut AuxiliaryBuffers,
         _context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
-        // CLEAN SEPARATION - Following Diopser pattern
+        // Analyze the input signal
         let sample_rate = self.sample_rate.load(Ordering::Relaxed);
-        // 1. Pre-gain spectrum analysis (analyze input signal)
-        self.spectrum_analyzer.process(buffer, sample_rate);
-
-        // 2. Apply audio effects (core gain processing)
-        audio_engine::apply_gain(buffer, &self.params.gain);
-
-        // 3. Post-gain meter analysis (analyze output signal)
-        self.meter_input.update_peaks(buffer);
+        self.audio_spectrum_producer.process(buffer, sample_rate);
+        self.audio_meter_producer.update_peaks(buffer);
 
         ProcessStatus::Normal
     }
 
     fn editor(&mut self, _async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
-        nih_plug::nih_log!("Editor requested");
-
         let init_flags = EditorInitFlags {
-            params: self.params.clone(),
             sample_rate: self.sample_rate.clone(),
-            spectrum_output: self.spectrum_output.clone(),
-            meter_output: self.meter_output.clone(),
+            spectrum_output: self.ui_spectrum_consumer.clone(),
+            meter_output: self.ui_meter_consumer.clone(),
         };
 
         create_iced_editor::<PluginEditor>(
@@ -204,22 +158,22 @@ impl Plugin for PluginLearn {
     }
 }
 
-impl ClapPlugin for PluginLearn {
-    const CLAP_ID: &'static str = "com.your-domain.plugin-learn";
-    const CLAP_DESCRIPTION: Option<&'static str> = Some("A short description of your plugin");
+impl ClapPlugin for SAPlugin {
+    const CLAP_ID: &'static str = "com.your-domain.spectrum-analyser";
+    const CLAP_DESCRIPTION: Option<&'static str> = Some("A real-time spectrum analyser");
     const CLAP_MANUAL_URL: Option<&'static str> = Some(Self::URL);
     const CLAP_SUPPORT_URL: Option<&'static str> = None;
 
     // Don't forget to change these features
-    const CLAP_FEATURES: &'static [ClapFeature] = &[ClapFeature::AudioEffect, ClapFeature::Stereo];
+    const CLAP_FEATURES: &'static [ClapFeature] = &[ClapFeature::Analyzer, ClapFeature::Stereo];
 }
 
-impl Vst3Plugin for PluginLearn {
+impl Vst3Plugin for SAPlugin {
     const VST3_CLASS_ID: [u8; 16] = *b"Exactly16Chars!!";
 
     // And also don't forget to change these categories
     const VST3_SUBCATEGORIES: &'static [Vst3SubCategory] =
-        &[Vst3SubCategory::Fx, Vst3SubCategory::Dynamics];
+        &[Vst3SubCategory::Analyzer, Vst3SubCategory::Tools];
 }
 
-nih_export_clap!(PluginLearn);
+nih_export_clap!(SAPlugin);

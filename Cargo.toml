@@ -1,11 +1,11 @@
 [package]
-name = "plugin-learn"
+name = "spectrum_analyser"
 version = "0.1.0"
 edition = "2021"
 authors = ["Cmdv <info@cmdv.me>"]
 license = "GPL-3.0-or-later"
 homepage = "www.cmdv.me"
-description = "A short description of your plugin"
+description = "A Spectrum analyser with potential"
 
 [workspace]
 members = ["xtask"]
@@ -27,10 +27,6 @@ realfft = "3.3"
 apodize = "1.0"
 dasp = "0.11.0"
 libm = "0.2.15"
-
-# Uncomment the below line to disable the on-by-default VST3 feature to remove
-# the GPL compatibility requirement
-# nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git", default-features = false, features = ["assert_process_allocs"] }
 
 [profile.release]
 lto = "thin"

@@ -10,7 +10,7 @@ echo "🔐 This script needs sudo access to install the plugin..."
 sudo -v
 while true; do sudo -n true; sleep 60; kill -0 "$$" || exit; done 2>/dev/null &
 
-PLUGIN_NAME="plugin-learn"
+PLUGIN_NAME="spectrum_analyser"
 CLAP_DIR="/Library/Audio/Plug-Ins/CLAP"
 PLUGIN_CLAP="${PLUGIN_NAME}.clap"
 
