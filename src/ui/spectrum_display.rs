@@ -1,19 +1,28 @@
 use crate::audio::constants;
-use crate::audio::spectrum::SpectrumConsumer;
+use crate::audio::spectrum::{SpectrumConsumer, SpectrumData};
 use crate::ui::UITheme;
 use atomic_float::AtomicF32;
 use nih_plug_iced::widget::canvas::{self, Frame, Geometry, Path, Program, Stroke};
 use nih_plug_iced::{mouse, Point, Rectangle, Renderer, Size, Theme};
-use std::sync::{atomic::Ordering, Arc};
+use std::sync::{atomic::Ordering, Arc, Mutex};
+use std::time::{Duration, Instant};
 
-/// Spectrum display component - no processing logic
-/// Reads spectrum data from SpectrumConsumer communication channel
+/// Spectrum display component with natural decay behavior
 pub struct SpectrumDisplay {
     /// Communication channel from audio thread
     spectrum_output: SpectrumConsumer,
-
     /// Sample rate for frequency calculation
     sample_rate: Arc<AtomicF32>,
+    /// Thread-safe mutable decay state
+    decay_state: Arc<Mutex<DecayState>>,
+}
+
+/// Internal state for managing spectrum decay behavior
+struct DecayState {
+    /// Last known spectrum data
+    last_spectrum: Option<SpectrumData>,
+    /// When spectrum data was last updated
+    last_update_time: Option<Instant>,
 }
 
 impl SpectrumDisplay {
@@ -21,6 +30,81 @@ impl SpectrumDisplay {
         Self {
             spectrum_output,
             sample_rate,
+            decay_state: Arc::new(Mutex::new(DecayState {
+                last_spectrum: None,
+                last_update_time: None,
+            })),
+        }
+    }
+
+    /// Apply exponential decay toward the spectrum floor over time
+    fn apply_decay(&self, spectrum: &SpectrumData, time_delta: Duration) -> SpectrumData {
+        // Faster, more natural decay - 1.5 seconds to reach floor
+        const RELEASE_TIME_SECONDS: f32 = 1.0;
+        const SPECTRUM_FLOOR_DB: f32 = -120.0; // Lower floor, similar to meter behavior
+
+        let decay_factor = (-time_delta.as_secs_f32() / RELEASE_TIME_SECONDS).exp();
+
+        spectrum
+            .iter()
+            .map(|&value| {
+                let decayed = value * decay_factor + SPECTRUM_FLOOR_DB * (1.0 - decay_factor);
+                decayed.max(SPECTRUM_FLOOR_DB)
+            })
+            .collect::<Vec<_>>()
+            .try_into()
+            .unwrap_or(*spectrum)
+    }
+
+    /// Get spectrum data for display, applying natural decay when values decrease
+    fn get_display_spectrum(&self) -> SpectrumData {
+        let current_spectrum = self.spectrum_output.read_or_silence();
+        let now = Instant::now();
+
+        // Try to get the lock, fall back to current spectrum if we can't
+        let mut state = match self.decay_state.try_lock() {
+            Ok(state) => state,
+            Err(_) => return current_spectrum,
+        };
+
+        // If this is the first spectrum or values are increasing, update immediately
+        if let Some(last) = state.last_spectrum {
+            // Check if spectrum is increasing (new audio) or decreasing (needs decay)
+            let is_increasing = current_spectrum
+                .iter()
+                .zip(last.iter())
+                .any(|(current, last)| current > last);
+
+            if is_increasing {
+                // New audio data - update immediately
+                state.last_spectrum = Some(current_spectrum);
+                state.last_update_time = Some(now);
+                current_spectrum
+            } else {
+                // Values decreasing - apply smooth decay
+                let time_delta = state.last_update_time
+                    .map(|t| now.duration_since(t))
+                    .unwrap_or(Duration::ZERO);
+
+                let decayed = self.apply_decay(&last, time_delta);
+
+                // Take the maximum of decayed and current (in case current is higher)
+                let result: SpectrumData = decayed
+                    .iter()
+                    .zip(current_spectrum.iter())
+                    .map(|(&d, &c)| d.max(c))
+                    .collect::<Vec<_>>()
+                    .try_into()
+                    .unwrap_or(current_spectrum);
+
+                state.last_spectrum = Some(result);
+                result
+            }
+        } else {
+            // First spectrum data
+            state.last_spectrum = Some(current_spectrum);
+            state.last_update_time = Some(now);
+            current_spectrum
         }
     }
 }
@@ -42,8 +126,11 @@ impl<Message> Program<Message, Theme> for SpectrumDisplay {
         let background = Path::rectangle(Point::ORIGIN, bounds.size());
         frame.fill(&background, UITheme::BACKGROUND_MAIN);
 
-        // Draw spectrum curve using full canvas bounds
-        self.draw_spectrum(&mut frame, bounds.size());
+        // Get spectrum data with decay applied when plugin is disabled
+        let spectrum_data = self.get_display_spectrum();
+
+        // Draw spectrum curve using processed data
+        self.draw_spectrum(&mut frame, bounds.size(), &spectrum_data);
 
         vec![frame.into_geometry()]
     }
@@ -87,10 +174,7 @@ impl SpectrumDisplay {
         calculate_single_display_point(bins, sample_rate, size, i, num_points)
     }
 
-    fn draw_spectrum(&self, frame: &mut Frame, size: Size) {
-        // READ ONLY - Get latest spectrum data from audio thread
-        let spectrum_data = self.spectrum_output.read_or_silence();
-
+    fn draw_spectrum(&self, frame: &mut Frame, size: Size, spectrum_data: &SpectrumData) {
         // Convert to Vec for compatibility with existing display code
         let smoothed_copy: Vec<f32> = spectrum_data.to_vec();
 

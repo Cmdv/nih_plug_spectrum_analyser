@@ -1,8 +1,8 @@
+use super::errors::{MeterError, MeterResult};
 use atomic_float::AtomicF32;
 use nih_plug::prelude::*;
-use std::sync::{atomic::Ordering, Arc};
 use std::convert::TryFrom;
-use super::errors::{MeterError, MeterResult};
+use std::sync::{atomic::Ordering, Arc};
 
 /// Smoothing factors for level meters
 /// These values are calibrated to match professional meter behavior
@@ -16,7 +16,7 @@ const PEAK_HOLD_CYCLES: u32 = 60;
 const SILENCE_THRESHOLD_DB: f32 = -50.0;
 
 /// Silence detection delay in frames before applying fast decay
-const SILENCE_DECAY_DELAY_FRAMES: u32 = 30;  // About 0.5 seconds at 60fps
+const SILENCE_DECAY_DELAY_FRAMES: u32 = 30; // About 0.5 seconds at 60fps
 
 /// Linear decay rate for silence (dB per frame)
 const SILENCE_DECAY_RATE_DB_PER_FRAME: f32 = 0.5;
@@ -88,11 +88,10 @@ impl MeterProducer {
     /// Must be real-time safe - no allocations or locks
     pub fn update_peaks(&self, buffer: &Buffer) {
         // Use TryFrom to get peak levels, falling back to silence on error
-        let peaks = PeakLevels::try_from(buffer)
-            .unwrap_or(PeakLevels {
-                left_db: util::MINUS_INFINITY_DB,
-                right_db: util::MINUS_INFINITY_DB,
-            });
+        let peaks = PeakLevels::try_from(buffer).unwrap_or(PeakLevels {
+            left_db: util::MINUS_INFINITY_DB,
+            right_db: util::MINUS_INFINITY_DB,
+        });
 
         // Update atomic values (lock-free communication to UI thread)
         self.peak_left.store(peaks.left_db, Ordering::Relaxed);
@@ -305,4 +304,3 @@ pub fn create_meter_channels() -> (MeterProducer, MeterConsumer) {
 
     (meter_input, meter_output)
 }
-

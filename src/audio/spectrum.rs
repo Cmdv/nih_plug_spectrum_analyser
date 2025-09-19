@@ -42,8 +42,8 @@ const TILT_REFERENCE_FREQ_HZ: f32 = 1000.0;
 const MIN_FREQ_THRESHOLD: f32 = 0.001;
 
 /// Debug logging frequency range bounds (for 1kHz region)
-const DEBUG_FREQ_LOWER_HZ: f32 = 950.0;
-const DEBUG_FREQ_UPPER_HZ: f32 = 1050.0;
+// const DEBUG_FREQ_LOWER_HZ: f32 = 950.0;
+// const DEBUG_FREQ_UPPER_HZ: f32 = 1050.0;
 
 /// Frequency thresholds for smoothing regions
 const SMOOTHING_HIGH_FREQ_HZ: f32 = 5000.0;
@@ -55,12 +55,12 @@ const HIGH_FREQ_KERNEL_SIZE: usize = 9;
 const MID_HIGH_FREQ_KERNEL_SIZE: usize = 7;
 
 /// Gaussian sigma values for smoothing weights
-const GAUSSIAN_SIGMA_STRONG: f32 = 1.0;  // For high frequency aggressive smoothing
-const GAUSSIAN_SIGMA_MODERATE: f32 = 2.0;  // For mid-high frequency smoothing
+const GAUSSIAN_SIGMA_STRONG: f32 = 1.0; // For high frequency aggressive smoothing
+const GAUSSIAN_SIGMA_MODERATE: f32 = 2.0; // For mid-high frequency smoothing
 
 /// Smoothing weights for 5-point mid frequency kernel
-const SMOOTH_WEIGHT_OUTER: f32 = 0.1;  // Weight for samples at ±2 positions
-const SMOOTH_WEIGHT_INNER: f32 = 0.2;  // Weight for samples at ±1 positions
+const SMOOTH_WEIGHT_OUTER: f32 = 0.1; // Weight for samples at ±2 positions
+const SMOOTH_WEIGHT_INNER: f32 = 0.2; // Weight for samples at ±1 positions
 const SMOOTH_WEIGHT_CENTER: f32 = 0.4; // Weight for center sample
 
 /// The spectrum analyser's frequency data - array of magnitude values in dB
@@ -208,8 +208,11 @@ impl SpectrumProducerBuilder {
     pub fn build(self) -> (SpectrumProducer, SpectrumConsumer) {
         // For now, we keep the window size fixed to SPECTRUM_WINDOW_SIZE
         // Future enhancement: support dynamic window sizes
-        assert_eq!(self.window_size.get(), SPECTRUM_WINDOW_SIZE_USIZE,
-                   "Dynamic window sizes not yet supported");
+        assert_eq!(
+            self.window_size.get(),
+            SPECTRUM_WINDOW_SIZE_USIZE,
+            "Dynamic window sizes not yet supported"
+        );
 
         // Create lock-free communication channel
         let (spectrum_producer, spectrum_consumer) =
@@ -275,14 +278,20 @@ impl SpectrumProducer {
         SpectrumProducerBuilder::new()
     }
 
+    /// Write silence to the spectrum buffer (used when plugin is deactivated)
+    /// This ensures the UI gets actual silence instead of stale audio data
+    pub fn write_silence(&mut self) {
+        let silence = [SPECTRUM_FLOOR_DB; SPECTRUM_BINS];
+        self.spectrum_producer.write(silence);
+    }
+
     /// Get the count of FFT failures (for debugging)
     /// Can be safely called from UI thread
     #[allow(dead_code)]
     pub fn fft_failure_count(&self) -> u32 {
-        self.fft_failure_count.load(std::sync::atomic::Ordering::Relaxed)
+        self.fft_failure_count
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
-
-
 
     /// Compute spectrum from audio buffer and send to UI thread
     /// Called from audio thread - must be real-time safe (no allocations)
@@ -291,7 +300,9 @@ impl SpectrumProducer {
         self.add_samples_to_ring_buffer(buffer);
 
         // Check if we should process FFT (50% overlap = every WINDOW_SIZE/2 samples)
-        if self.samples_since_fft >= (SPECTRUM_WINDOW_SIZE_USIZE as f32 * FFT_OVERLAP_FACTOR) as usize {
+        if self.samples_since_fft
+            >= (SPECTRUM_WINDOW_SIZE_USIZE as f32 * FFT_OVERLAP_FACTOR) as usize
+        {
             self.samples_since_fft = 0;
 
             // Copy from ring buffer to FFT buffer
@@ -307,7 +318,8 @@ impl SpectrumProducer {
             ) {
                 // FFT failed - skip this frame to maintain real-time safety
                 // Just increment counter for debugging, no logging in audio thread
-                self.fft_failure_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                self.fft_failure_count
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 return;
             }
 
@@ -337,7 +349,8 @@ impl SpectrumProducer {
             let mono_sample = channel_slices
                 .iter()
                 .map(|channel| channel[sample_idx])
-                .sum::<f32>() / num_channels as f32;
+                .sum::<f32>()
+                / num_channels as f32;
 
             // Add to ring buffer
             self.ring_buffer[self.ring_buffer_pos] = mono_sample;
@@ -571,10 +584,10 @@ pub fn compute_magnitude_spectrum(
             let freq_hz = (bin_idx as f32 * sample_rate) / window_size as f32;
 
             // Debug logging for 1kHz region
-            if freq_hz >= DEBUG_FREQ_LOWER_HZ && freq_hz <= DEBUG_FREQ_UPPER_HZ && amplitude > MIN_AMPLITUDE_THRESHOLD {
-                nih_plug::nih_log!("FFT bin {}: freq={:.1}Hz, magnitude={:.6}, scaling={:.6}, coherent_gain={:.6}, amplitude={:.6}, db={:.1}dB",
-                    bin_idx, freq_hz, magnitude, scaling, window_coherent_gain, amplitude, db_value);
-            }
+            // if freq_hz >= DEBUG_FREQ_LOWER_HZ && freq_hz <= DEBUG_FREQ_UPPER_HZ && amplitude > MIN_AMPLITUDE_THRESHOLD {
+            //     nih_plug::nih_log!("FFT bin {}: freq={:.1}Hz, magnitude={:.6}, scaling={:.6}, coherent_gain={:.6}, amplitude={:.6}, db={:.1}dB",
+            //         bin_idx, freq_hz, magnitude, scaling, window_coherent_gain, amplitude, db_value);
+            // }
 
             // Apply tilt compensation
             let tilted_db = apply_tilt_compensation(db_value, freq_hz, SPECTRUM_TILT_DB_PER_OCT);
@@ -754,7 +767,11 @@ pub fn apply_frequency_dependent_smoothing(spectrum: &[f32], sample_rate: f32) -
             let next = spectrum[i + 1];
             let next2 = spectrum.get(i + 2).unwrap_or(&spectrum[i]);
 
-            smoothed[i] = prev2 * SMOOTH_WEIGHT_OUTER + prev * SMOOTH_WEIGHT_INNER + curr * SMOOTH_WEIGHT_CENTER + next * SMOOTH_WEIGHT_INNER + next2 * SMOOTH_WEIGHT_OUTER;
+            smoothed[i] = prev2 * SMOOTH_WEIGHT_OUTER
+                + prev * SMOOTH_WEIGHT_INNER
+                + curr * SMOOTH_WEIGHT_CENTER
+                + next * SMOOTH_WEIGHT_INNER
+                + next2 * SMOOTH_WEIGHT_OUTER;
         }
         // Leave frequencies < 1kHz unchanged for maximum detail
     }

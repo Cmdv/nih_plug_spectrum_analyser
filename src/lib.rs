@@ -9,7 +9,8 @@ use editor::EditorInitFlags;
 use editor::PluginEditor;
 use nih_plug::prelude::*;
 use nih_plug_iced::{create_iced_editor, IcedState};
-use std::sync::{atomic::Ordering, Arc};
+use std::sync::{atomic::{AtomicU64, Ordering}, Arc};
+use std::time::Instant;
 
 struct SAPlugin {
     // PLUGIN PARAMETERS (empty for now, but keeps the structure)
@@ -37,10 +38,9 @@ impl Default for SAPlugin {
     fn default() -> Self {
         let sample_rate = Arc::new(AtomicF32::new(44100.0));
 
-        // Use the builder pattern to configure the spectrum analyzer
-        // This demonstrates how to customize the analyzer settings
+        // Configure the spectrum analyzer
         let (audio_spectrum_producer, ui_spectrum_consumer) = SpectrumProducer::builder()
-            .speed(audio::spectrum::SpectrumSpeed::Medium)  // Default speed for balanced response
+            .speed(audio::spectrum::SpectrumSpeed::Medium) // Default speed for balanced response
             .build();
 
         let (audio_meter_producer, ui_meter_consumer) = create_meter_channels();
@@ -133,6 +133,14 @@ impl Plugin for SAPlugin {
     fn reset(&mut self) {
         // Reset buffers and envelopes here. This can be called from the audio thread and may not
         // allocate. You can remove this function if you do not need it.
+        nih_plug::nih_log!("RESET called!");
+    }
+
+    fn deactivate(&mut self) {
+        // Called when plugin is disabled - write silence to spectrum buffer
+        // This prevents the UI from showing stale data when plugin is re-enabled
+        self.audio_spectrum_producer.write_silence();
+        nih_plug::nih_log!("Plugin deactivated - wrote silence to spectrum buffer");
     }
 
     fn process(
@@ -141,7 +149,6 @@ impl Plugin for SAPlugin {
         _aux: &mut AuxiliaryBuffers,
         _context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
-        // Analyze the input signal
         let sample_rate = self.sample_rate.load(Ordering::Relaxed);
         self.audio_spectrum_producer.process(buffer, sample_rate);
         self.audio_meter_producer.update_peaks(buffer);
