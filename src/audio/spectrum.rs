@@ -18,7 +18,7 @@ pub const SPECTRUM_WINDOW_SIZE_USIZE: usize = SPECTRUM_WINDOW_SIZE.get();
 pub const SPECTRUM_BINS: usize = SPECTRUM_WINDOW_SIZE_USIZE / 2 + 1;
 
 /// Pink noise tilt compensation in dB per octave to make spectrum appear flatter
-const SPECTRUM_TILT_DB_PER_OCT: f32 = 4.5;
+const SPECTRUM_TILT_DB_PER_OCT: f32 = 6.0;
 
 /// Spectrum analyser floor prevents log(0) in FFT calculations
 const SPECTRUM_FLOOR_DB: f32 = -120.0;
@@ -584,13 +584,19 @@ pub fn compute_magnitude_spectrum(
             let freq_hz = (bin_idx as f32 * sample_rate) / window_size as f32;
 
             // Debug logging for 1kHz region
-            // if freq_hz >= DEBUG_FREQ_LOWER_HZ && freq_hz <= DEBUG_FREQ_UPPER_HZ && amplitude > MIN_AMPLITUDE_THRESHOLD {
-            //     nih_plug::nih_log!("FFT bin {}: freq={:.1}Hz, magnitude={:.6}, scaling={:.6}, coherent_gain={:.6}, amplitude={:.6}, db={:.1}dB",
-            //         bin_idx, freq_hz, magnitude, scaling, window_coherent_gain, amplitude, db_value);
-            // }
+            if freq_hz >= 950.0 && freq_hz <= 1050.0 && amplitude > MIN_AMPLITUDE_THRESHOLD {
+                nih_plug::nih_log!("FFT bin {}: freq={:.1}Hz, magnitude={:.6}, scaling={:.6}, coherent_gain={:.6}, amplitude={:.6}, db={:.1}dB",
+                    bin_idx, freq_hz, magnitude, scaling, window_coherent_gain, amplitude, db_value);
+            }
 
             // Apply tilt compensation
             let tilted_db = apply_tilt_compensation(db_value, freq_hz, SPECTRUM_TILT_DB_PER_OCT);
+
+            // Debug: log final values being sent to UI
+            if freq_hz >= 950.0 && freq_hz <= 1050.0 && tilted_db > -50.0 {
+                nih_plug::nih_log!("Final to UI - bin {}: freq={:.1}Hz, before_tilt={:.1}dB, after_tilt={:.1}dB",
+                    bin_idx, freq_hz, db_value, tilted_db);
+            }
 
             // Apply floor clamping
             tilted_db.max(SPECTRUM_FLOOR_DB)
@@ -699,7 +705,8 @@ pub fn apply_spectrum_smoothing(
         .collect();
 
     // Apply frequency-dependent smoothing to reduce high-frequency noise
-    let smoothed = apply_frequency_dependent_smoothing(&temporally_smoothed, sample_rate);
+    // let smoothed = apply_frequency_dependent_smoothing(&temporally_smoothed, sample_rate);
+    let smoothed = temporally_smoothed.clone(); // Temporarily disable frequency smoothing
 
     let result = smoothed.clone();
     (result.clone(), result)

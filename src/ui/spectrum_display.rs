@@ -262,7 +262,7 @@ pub fn interpolate_bin_value(bins: &[f32], frequency: f32, sample_rate: f32) -> 
     let bin_index = bin_position.floor() as usize;
     let bin_fraction = bin_position.fract();
 
-    if bin_index + 1 < bins.len() {
+    let result = if bin_index + 1 < bins.len() {
         // Linear interpolation between two bins
         let current_bin = bins[bin_index];
         let next_bin = bins[bin_index + 1];
@@ -271,7 +271,15 @@ pub fn interpolate_bin_value(bins: &[f32], frequency: f32, sample_rate: f32) -> 
         bins[bin_index]
     } else {
         -100.0 // Out of range
+    };
+
+    // Debug logging for 1kHz region
+    if frequency >= 950.0 && frequency <= 1050.0 && result > -50.0 {
+        nih_plug::nih_log!("UI Display - freq={:.1}Hz, bin_pos={:.2}, bin_idx={}, result={:.1}dB",
+            frequency, bin_position, bin_index, result);
     }
+
+    result
 }
 
 /// Map dB value to screen coordinates
