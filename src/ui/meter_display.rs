@@ -6,11 +6,11 @@ use nih_plug_iced::widget::canvas::{
 use nih_plug_iced::{border::Radius, mouse, Color, Point, Rectangle, Renderer, Size, Theme};
 
 // Local constants for meter display
-const METER_MAX_DB: f32 = 12.0;
+const METER_MAX_DB: f32 = 0.0;
 const METER_MIN_DB: f32 = -60.0;
-const METER_RANGE_DB: f32 = METER_MAX_DB - METER_MIN_DB; // 72dB range
+const METER_RANGE_DB: f32 = METER_MAX_DB - METER_MIN_DB; // 60dB range
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub enum Channel {
     Left,
     Right,
@@ -102,6 +102,11 @@ impl MeterDisplay {
         let led_count = 110;
         let led_gap = 1.0;
 
+        // Debug logging
+        if channel == Channel::Left {
+            nih_plug::nih_log!("Meter drawing - Left channel: {:.2} dB", level_db);
+        }
+
         let leds = generate_meter_leds(position, size, level_db, channel, led_count, led_gap);
 
         let gradient = create_meter_gradient(
@@ -184,13 +189,17 @@ pub fn create_meter_gradient(start_point: Point, end_point: Point) -> Linear {
             Color::from_rgb(44.0 / 255.0, 67.0 / 255.0, 27.0 / 255.0),
         ) // Green
         .add_stop(
-            0.98,
+            0.95,
             Color::from_rgb(214.0 / 255.0, 198.0 / 255.0, 82.0 / 255.0),
-        ) // Yellow
+        ) // Yellow at 95%
+        .add_stop(
+            0.97,
+            Color::from_rgb(255.0 / 255.0, 140.0 / 255.0, 0.0),
+        ) // Orange transition
         .add_stop(
             1.0,
             Color::from_rgb(255.0 / 255.0, 77.0 / 255.0, 26.0 / 255.0),
-        ) // Red
+        ) // Red for top 3%
 }
 
 /// Create rounded rectangle path for channel-specific LED shape

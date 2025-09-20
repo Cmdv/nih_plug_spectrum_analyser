@@ -4,6 +4,7 @@ use crate::ui::{GridOverlay, MeterDisplay, SpectrumDisplay, UITheme};
 
 use atomic_float::AtomicF32;
 use nih_plug::context::gui::GuiContext;
+use std::sync::atomic::{AtomicBool, Ordering};
 use nih_plug_iced::executor::Default;
 use nih_plug_iced::futures::Subscription;
 use nih_plug_iced::widget::canvas::Canvas;
@@ -24,6 +25,7 @@ pub enum Message {
 pub struct EditorData {
     /// AUDIO STATE - Read-only from UI
     pub sample_rate: Arc<AtomicF32>,
+    pub process_stopped: Arc<AtomicBool>,
 
     /// DISPLAY DATA - Separated communication channels
     pub spectrum_output: SpectrumConsumer,
@@ -33,6 +35,7 @@ pub struct EditorData {
 #[derive(Clone)]
 pub struct EditorInitFlags {
     pub sample_rate: Arc<AtomicF32>,
+    pub process_stopped: Arc<AtomicBool>,
     pub spectrum_output: SpectrumConsumer,
     pub meter_output: MeterConsumer,
 }
@@ -62,7 +65,7 @@ pub fn create_spectrum_canvas(
 /// Create dB value display text widget
 pub fn create_db_display(peak_hold_db: f32) -> Element<'static, Message, Theme, Renderer> {
     text(format!("{:.1} dB", peak_hold_db))
-        .size(10.0)
+        .size(6.0)
         .color(UITheme::TEXT_SECONDARY)
         .into()
 }
@@ -104,7 +107,7 @@ pub fn create_main_layout_with_stack<'a>(
                 .height(Length::Fill)
                 .style(UITheme::background_dark),
             container(right_panel)
-                .width(Length::Fixed(80.0))
+                .width(Length::Fixed(UITheme::METER_WIDTH + 15.0))
                 .height(Length::Fill)
                 .padding(5)
                 .style(UITheme::background_dark)
@@ -130,6 +133,7 @@ impl IcedEditor for PluginEditor {
         // Create grouped editor data following Diopser pattern
         let editor_data = EditorData {
             sample_rate: initialization_flags.sample_rate,
+            process_stopped: initialization_flags.process_stopped,
             spectrum_output: initialization_flags.spectrum_output,
             meter_output: initialization_flags.meter_output,
         };
@@ -196,13 +200,30 @@ impl IcedEditor for PluginEditor {
         // Stack the canvases on top of each other
         let layered_spectrum = stack![spectrum_container, grid_canvas];
 
-        let db_display =
-            create_db_display(self.editor_data.meter_output.get_peak_hold_db_or_silence());
+        let db_display = create_db_display(self.editor_data.meter_output.get_peak_hold_db_or_silence());
         let meter_canvas = create_meter_canvas(&self.meter_display);
 
         // Compose layout using pure functions
         let right_panel = create_right_panel(db_display, meter_canvas);
-        create_main_layout_with_stack(layered_spectrum, right_panel)
+        let main_content = create_main_layout_with_stack(layered_spectrum, right_panel);
+
+        // Apply grey overlay when processing is stopped
+        if self.editor_data.process_stopped.load(Ordering::Relaxed) {
+            // Create a semi-transparent grey overlay
+            let overlay = container(text(""))
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .style(|_theme| container::Style {
+                    background: Some(nih_plug_iced::Background::Color(
+                        nih_plug_iced::Color::from_rgba(0.1, 0.1, 0.1, 0.8)
+                    )),
+                    ..container::Style::default()
+                });
+
+            stack![main_content, overlay].into()
+        } else {
+            main_content
+        }
     }
 
     fn theme(&self) -> Self::Theme {

@@ -26,7 +26,7 @@ impl UITheme {
     pub const TEXT_DB_MARKER: Color = Color::from_rgb(1.0, 1.0, 0.6); // Yellow for dB labels
 
     // === DIMENSIONS ===
-    pub const METER_WIDTH: f32 = 60.0;
+    pub const METER_WIDTH: f32 = 40.0;
 
     /// Margins and padding
     pub const PADDING_SMALL: u16 = 5;

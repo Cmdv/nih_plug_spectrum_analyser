@@ -215,7 +215,10 @@ impl SpectrumDisplay {
         // Create fill path (closed polygon) with same smooth curves
         let mut fill_builder = canvas::path::Builder::new();
 
-        // Start at bottom left (also shifted down)
+        // Use same width calculation as spectrum points for X-axis alignment
+        let spectrum_width = size.width - UITheme::SPECTRUM_MARGIN_RIGHT;
+
+        // Start at bottom left (shifted down to hide floor line)
         fill_builder.move_to(Point::new(0.0, size.height + 5.0));
 
         // Add first point
@@ -224,8 +227,8 @@ impl SpectrumDisplay {
         // Add smooth spectrum curve using the helper method
         Self::add_smooth_curves_to_path(&mut fill_builder, &points, smoothing, false);
 
-        // Close at bottom right (also shifted down)
-        fill_builder.line_to(Point::new(size.width, size.height + 5.0));
+        // Close at bottom right (shifted down to hide floor line)
+        fill_builder.line_to(Point::new(spectrum_width, size.height + 5.0));
         fill_builder.close();
 
         let fill_path = fill_builder.build();
@@ -288,7 +291,10 @@ pub fn map_to_screen_coordinates(
     // Map dB range to screen coordinates
     let normalized = constants::db_to_normalized(db_value);
 
-    let x = (point_index as f32 / total_points as f32) * size.width;
+    // Use same width calculation as grid overlay for alignment
+    let spectrum_width = size.width - UITheme::SPECTRUM_MARGIN_RIGHT;
+
+    let x = (point_index as f32 / total_points as f32) * spectrum_width;
     let y = size.height * (1.0 - normalized);
 
     Point::new(x, y)

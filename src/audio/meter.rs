@@ -6,8 +6,8 @@ use std::sync::{atomic::Ordering, Arc};
 
 /// Smoothing factors for level meters
 /// These values are calibrated to match professional meter behavior
-const METER_ATTACK: f32 = 0.3; // Moderate attack (not too jumpy)
-const METER_RELEASE: f32 = 0.001; // Ultra slow release for natural decay
+const METER_ATTACK: f32 = 0.6; // Moderate attack (not too jumpy)
+const METER_RELEASE: f32 = 0.01; // Faster release for quicker decay
 
 /// Peak hold time in update cycles (approximately 1 second at 60fps)
 const PEAK_HOLD_CYCLES: u32 = 60;
@@ -96,6 +96,12 @@ impl MeterProducer {
         // Update atomic values (lock-free communication to UI thread)
         self.peak_left.store(peaks.left_db, Ordering::Relaxed);
         self.peak_right.store(peaks.right_db, Ordering::Relaxed);
+    }
+
+    /// Write silence to the meter (called when processing stops)
+    pub fn write_silence(&self) {
+        self.peak_left.store(util::MINUS_INFINITY_DB, Ordering::Relaxed);
+        self.peak_right.store(util::MINUS_INFINITY_DB, Ordering::Relaxed);
     }
 }
 

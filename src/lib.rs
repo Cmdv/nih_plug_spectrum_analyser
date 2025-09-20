@@ -9,8 +9,7 @@ use editor::EditorInitFlags;
 use editor::PluginEditor;
 use nih_plug::prelude::*;
 use nih_plug_iced::{create_iced_editor, IcedState};
-use std::sync::{atomic::{AtomicU64, Ordering}, Arc};
-use std::time::Instant;
+use std::sync::{atomic::{AtomicBool, Ordering}, Arc};
 
 struct SAPlugin {
     // PLUGIN PARAMETERS (empty for now, but keeps the structure)
@@ -29,6 +28,9 @@ struct SAPlugin {
 
     // UI STATE
     iced_state: Arc<IcedState>,
+
+    // PROCESSING STATE
+    process_stopped: Arc<AtomicBool>,
 }
 
 #[derive(Params)]
@@ -60,6 +62,9 @@ impl Default for SAPlugin {
 
             // UI STATE
             iced_state: IcedState::from_size(800, 600),
+
+            // PROCESSING STATE
+            process_stopped: Arc::new(AtomicBool::new(false)),
         }
     }
 }
@@ -131,16 +136,16 @@ impl Plugin for SAPlugin {
     }
 
     fn reset(&mut self) {
-        // Reset buffers and envelopes here. This can be called from the audio thread and may not
-        // allocate. You can remove this function if you do not need it.
-        nih_plug::nih_log!("RESET called!");
+        // Called when processing starts/resumes
+        self.process_stopped.store(false, Ordering::Relaxed);
+        nih_plug::nih_log!("Processing started - UI should activate");
     }
 
-    fn deactivate(&mut self) {
-        // Called when plugin is disabled - write silence to spectrum buffer
-        // This prevents the UI from showing stale data when plugin is re-enabled
+    fn process_stopped(&mut self) {
         self.audio_spectrum_producer.write_silence();
-        nih_plug::nih_log!("Plugin deactivated - wrote silence to spectrum buffer");
+        self.audio_meter_producer.write_silence();
+        self.process_stopped.store(true, Ordering::Relaxed);
+        nih_plug::nih_log!("Processing stopped - UI should grey out");
     }
 
     fn process(
@@ -159,6 +164,7 @@ impl Plugin for SAPlugin {
     fn editor(&mut self, _async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
         let init_flags = EditorInitFlags {
             sample_rate: self.sample_rate.clone(),
+            process_stopped: self.process_stopped.clone(),
             spectrum_output: self.ui_spectrum_consumer.clone(),
             meter_output: self.ui_meter_consumer.clone(),
         };
