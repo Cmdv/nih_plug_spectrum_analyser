@@ -1,16 +1,17 @@
 use crate::audio::meter::MeterConsumer;
 use crate::audio::spectrum::SpectrumConsumer;
 use crate::ui::{GridOverlay, MeterDisplay, SpectrumDisplay, UITheme};
+use crate::SAPluginParams;
 
 use atomic_float::AtomicF32;
 use nih_plug::context::gui::GuiContext;
-use std::sync::atomic::{AtomicBool, Ordering};
 use nih_plug_iced::executor::Default;
 use nih_plug_iced::futures::Subscription;
 use nih_plug_iced::widget::canvas::Canvas;
 use nih_plug_iced::widget::{column, container, row, stack, text};
 use nih_plug_iced::Padding;
 use nih_plug_iced::{alignment::Horizontal, Element, IcedEditor, Length, Renderer, Task, Theme};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 #[derive(Debug, Clone)]
@@ -19,11 +20,12 @@ pub enum Message {
     Tick,
 }
 
-/// Grouped UI data following Diopser pattern
+/// Grouped UI data structure
 /// Contains all data needed for the editor UI thread
 #[derive(Clone)]
 pub struct EditorData {
     /// AUDIO STATE - Read-only from UI
+    pub plugin_params: Arc<SAPluginParams>,
     pub sample_rate: Arc<AtomicF32>,
     pub process_stopped: Arc<AtomicBool>,
 
@@ -34,6 +36,7 @@ pub struct EditorData {
 
 #[derive(Clone)]
 pub struct EditorInitFlags {
+    pub plugin_params: Arc<SAPluginParams>,
     pub sample_rate: Arc<AtomicF32>,
     pub process_stopped: Arc<AtomicBool>,
     pub spectrum_output: SpectrumConsumer,
@@ -130,8 +133,9 @@ impl IcedEditor for PluginEditor {
         initialization_flags: Self::InitializationFlags,
         context: Arc<dyn GuiContext>,
     ) -> (Self, Task<Self::Message>) {
-        // Create grouped editor data following Diopser pattern
+        // Create grouped editor data structure
         let editor_data = EditorData {
+            plugin_params: initialization_flags.plugin_params,
             sample_rate: initialization_flags.sample_rate,
             process_stopped: initialization_flags.process_stopped,
             spectrum_output: initialization_flags.spectrum_output,
@@ -143,6 +147,7 @@ impl IcedEditor for PluginEditor {
             spectrum_display: SpectrumDisplay::new(
                 editor_data.spectrum_output.clone(),
                 editor_data.sample_rate.clone(),
+                editor_data.plugin_params.clone(),
             ),
             grid_overlay: GridOverlay::new(),
             meter_display: MeterDisplay::new(editor_data.meter_output.clone()),
@@ -200,7 +205,8 @@ impl IcedEditor for PluginEditor {
         // Stack the canvases on top of each other
         let layered_spectrum = stack![spectrum_container, grid_canvas];
 
-        let db_display = create_db_display(self.editor_data.meter_output.get_peak_hold_db_or_silence());
+        let db_display =
+            create_db_display(self.editor_data.meter_output.get_peak_hold_db_or_silence());
         let meter_canvas = create_meter_canvas(&self.meter_display);
 
         // Compose layout using pure functions
@@ -215,7 +221,7 @@ impl IcedEditor for PluginEditor {
                 .height(Length::Fill)
                 .style(|_theme| container::Style {
                     background: Some(nih_plug_iced::Background::Color(
-                        nih_plug_iced::Color::from_rgba(0.1, 0.1, 0.1, 0.8)
+                        nih_plug_iced::Color::from_rgba(0.1, 0.1, 0.1, 0.8),
                     )),
                     ..container::Style::default()
                 });

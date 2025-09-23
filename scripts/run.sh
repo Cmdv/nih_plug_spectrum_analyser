@@ -48,11 +48,12 @@ tmux new-session -d -s $SESSION_NAME -n main
 # Split window vertically (left/right)
 tmux split-window -h -t $SESSION_NAME:main
 
-# Left pane: Start Bitwig
-tmux send-keys -t $SESSION_NAME:main.0 'NIH_LOG='$LOG_FILE' "/Applications/Bitwig Studio.app/Contents/MacOS/BitwigStudio"' Enter
+# Left pane: Monitor logs
+tmux send-keys -t $SESSION_NAME:main.0 'while [ ! -f '$LOG_FILE' ]; do sleep 1; done && tail -f '$LOG_FILE Enter
 
-# Right pane: Monitor logs
-tmux send-keys -t $SESSION_NAME:main.1 'while [ ! -f '$LOG_FILE' ]; do sleep 1; done && tail -f '$LOG_FILE Enter
+# Right pane: Start Bitwig
+tmux send-keys -t $SESSION_NAME:main.1 'NIH_LOG='$LOG_FILE' "/Applications/Bitwig Studio.app/Contents/MacOS/BitwigStudio"' Enter
+
 
 # Focus on left pane (Bitwig)
 tmux select-pane -t $SESSION_NAME:main.0

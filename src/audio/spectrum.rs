@@ -1,39 +1,33 @@
 use nih_plug::prelude::*;
 use realfft::{num_complex::Complex32, RealFftPlanner, RealToComplex};
 use std::num::NonZeroUsize;
-use std::sync::Arc;
+use std::sync::*;
 use triple_buffer::TripleBuffer;
 
 use super::errors::{SpectrumError, SpectrumResult};
-use super::window_functions::{AdaptiveWindowStrategy, AdaptiveWindows, WindowData};
+use super::window_functions::WindowType;
+use crate::{ResolutionLevel, TiltLevel};
 
-/// The size of our FFT analysis window
-/// 2048 gives us 23.4Hz resolution at 48kHz (good for 20Hz-20kHz range)
-pub const SPECTRUM_WINDOW_SIZE: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(2048) };
+/// Maximum FFT size we support (for buffer allocation)
+pub const MAX_FFT_SIZE: NonZeroUsize = unsafe { NonZeroUsize::new_unchecked(4096) };
 
-/// Legacy usize version for compatibility with existing code
-pub const SPECTRUM_WINDOW_SIZE_USIZE: usize = SPECTRUM_WINDOW_SIZE.get();
+/// Maximum FFT size as usize for convenience
+pub const MAX_FFT_SIZE_USIZE: usize = MAX_FFT_SIZE.get();
 
-/// Number of frequency bins produced by the FFT (N/2 + 1 for real FFT)
-pub const SPECTRUM_BINS: usize = SPECTRUM_WINDOW_SIZE_USIZE / 2 + 1;
-
-/// Pink noise tilt compensation in dB per octave to make spectrum appear flatter
-const SPECTRUM_TILT_DB_PER_OCT: f32 = 6.0;
+/// Maximum number of frequency bins (for maximum FFT size)
+pub const MAX_SPECTRUM_BINS: usize = MAX_FFT_SIZE_USIZE / 2 + 1;
 
 /// Spectrum analyser floor prevents log(0) in FFT calculations
-const SPECTRUM_FLOOR_DB: f32 = -120.0;
+const SPECTRUM_FLOOR_DB: f32 = -140.0;
 
-/// FFT overlap factor for smoother spectrum updates (50% overlap)
+/// FFT overlap factor (50% overlap between consecutive FFT windows)
 const FFT_OVERLAP_FACTOR: f32 = 0.5;
 
-/// Ring buffer size multiplier (2x for 50% overlap)
+/// Ring buffer size multiplier to accommodate overlap
 const RING_BUFFER_SIZE_MULTIPLIER: usize = 2;
 
 /// Minimum amplitude threshold to avoid log(0) errors
-const MIN_AMPLITUDE_THRESHOLD: f32 = 1e-8;
-
-/// dB conversion factor (20 * log10)
-const DB_CONVERSION_FACTOR: f32 = 20.0;
+const MIN_AMPLITUDE_THRESHOLD: f32 = 1e-30;
 
 /// Reference frequency for tilt compensation (1kHz standard)
 const TILT_REFERENCE_FREQ_HZ: f32 = 1000.0;
@@ -41,42 +35,21 @@ const TILT_REFERENCE_FREQ_HZ: f32 = 1000.0;
 /// Minimum frequency threshold to avoid log(0) in tilt calculation
 const MIN_FREQ_THRESHOLD: f32 = 0.001;
 
-/// Debug logging frequency range bounds (for 1kHz region)
-// const DEBUG_FREQ_LOWER_HZ: f32 = 950.0;
-// const DEBUG_FREQ_UPPER_HZ: f32 = 1050.0;
-
-/// Frequency thresholds for smoothing regions
-const SMOOTHING_HIGH_FREQ_HZ: f32 = 5000.0;
-const SMOOTHING_MID_HIGH_FREQ_HZ: f32 = 2000.0;
-const SMOOTHING_MID_FREQ_HZ: f32 = 800.0;
-
-/// Smoothing kernel sizes for different frequency regions
-const HIGH_FREQ_KERNEL_SIZE: usize = 9;
-const MID_HIGH_FREQ_KERNEL_SIZE: usize = 7;
-
-/// Gaussian sigma values for smoothing weights
-const GAUSSIAN_SIGMA_STRONG: f32 = 1.0; // For high frequency aggressive smoothing
-const GAUSSIAN_SIGMA_MODERATE: f32 = 2.0; // For mid-high frequency smoothing
-
-/// Smoothing weights for 5-point mid frequency kernel
-const SMOOTH_WEIGHT_OUTER: f32 = 0.1; // Weight for samples at ±2 positions
-const SMOOTH_WEIGHT_INNER: f32 = 0.2; // Weight for samples at ±1 positions
-const SMOOTH_WEIGHT_CENTER: f32 = 0.4; // Weight for center sample
-
-/// The spectrum analyser's frequency data - array of magnitude values in dB
-pub type SpectrumData = [f32; SPECTRUM_BINS];
+/// The spectrum analyser's frequency data - vector of magnitude values in dB
+/// Variable size based on resolution setting
+pub type SpectrumData = Vec<f32>;
 
 /// Cloneable wrapper for spectrum output channel (UI thread reads from this)
 /// Uses Arc<Mutex<>> wrapper to allow cloning for editor initialization
 #[derive(Clone)]
 pub struct SpectrumConsumer {
-    output: Arc<std::sync::Mutex<triple_buffer::Output<SpectrumData>>>,
+    output: Arc<Mutex<triple_buffer::Output<SpectrumData>>>,
 }
 
 impl SpectrumConsumer {
     fn new(output: triple_buffer::Output<SpectrumData>) -> Self {
         Self {
-            output: Arc::new(std::sync::Mutex::new(output)),
+            output: Arc::new(Mutex::new(output)),
         }
     }
 
@@ -86,7 +59,7 @@ impl SpectrumConsumer {
     pub fn read(&self) -> SpectrumResult<SpectrumData> {
         self.output
             .try_lock()
-            .map(|mut output| *output.read())
+            .map(|mut output| output.read().clone())
             .map_err(|_| SpectrumError::LockFailed {
                 resource: "spectrum output".to_string(),
             })
@@ -96,45 +69,51 @@ impl SpectrumConsumer {
     /// Convenience method for when you want to always get data
     #[must_use]
     pub fn read_or_silence(&self) -> SpectrumData {
-        self.read().unwrap_or([SPECTRUM_FLOOR_DB; SPECTRUM_BINS])
+        self.read().unwrap_or_else(|_| vec![SPECTRUM_FLOOR_DB; 256]) // Default fallback size
     }
 }
 
-/// Spectrum analyser speed presets for temporal smoothing
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// Spectrum analyser speed presets for temporal envelope (attack/release)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, nih_plug::prelude::Enum)]
 #[allow(dead_code)]
 pub enum SpectrumSpeed {
+    #[id = "very_slow"]
+    #[name = "Very Slow"]
     VerySlow,
+    #[id = "slow"]
+    #[name = "Slow"]
     Slow,
+    #[id = "medium"]
+    #[name = "Medium"]
     Medium,
+    #[id = "fast"]
+    #[name = "Fast"]
     Fast,
+    #[id = "very_fast"]
+    #[name = "Very Fast"]
     VeryFast,
 }
 
 impl SpectrumSpeed {
-    /// Get attack and release time constants in milliseconds
-    /// Professional spectrum analyser speed settings
-    fn time_constants_ms(&self) -> (f32, f32) {
+    /// Get response time constant in milliseconds for temporal envelope
+    fn response_time_ms(&self) -> f32 {
         match self {
-            Self::VerySlow => (100.0, 2000.0), // Very slow, smooth display
-            Self::Slow => (50.0, 1000.0),      // Slow, good for overall monitoring
-            Self::Medium => (20.0, 400.0),     // Medium, balanced response
-            Self::Fast => (5.0, 100.0),        // Fast, good for transients
-            Self::VeryFast => (1.0, 20.0),     // Very fast, immediate response
+            Self::VerySlow => 5000.0,
+            Self::Slow => 1500.0,
+            Self::Medium => 500.0,
+            Self::Fast => 250.0,
+            Self::VeryFast => 100.0,
         }
     }
 }
 
 /// Continuously computes frequency spectrum and sends to [`SpectrumConsumer`] (audio thread writes to this)
 pub struct SpectrumProducer {
-    /// FFT processing engine
+    /// FFT processing engine for frequency domain transformation
     fft_processor: Arc<dyn RealToComplex<f32>>,
-    /// Adaptive window strategy for frequency-dependent windowing
-    window_strategy: AdaptiveWindowStrategy,
-    /// Pre-computed windows for different frequency ranges
-    adaptive_windows: AdaptiveWindows,
+    /// Pre-computed Hann window for spectrum analysis
+    window_coefficients: Vec<f32>,
     /// Ring buffer for accumulating samples across multiple process calls
-    /// Size is 2x window size for 50% overlap
     ring_buffer: Vec<f32>,
     /// Write position in ring buffer
     ring_buffer_pos: usize,
@@ -144,144 +123,56 @@ pub struct SpectrumProducer {
     time_domain_buffer: Vec<f32>,
     /// Output buffer for FFT results (frequency domain)
     frequency_domain_buffer: Vec<Complex32>,
-    /// Current spectrum result with smoothing applied
+    /// Current spectrum result - size determined by resolution parameter
     spectrum_result: SpectrumData,
-    /// Previous spectrum for smoothing calculations
+    /// Previous spectrum for temporal envelope calculations - size matches current
     previous_spectrum: SpectrumData,
+    /// Current resolution level that determines buffer sizes
+    current_resolution: ResolutionLevel,
     /// Triple buffer producer for lock-free communication to UI
     spectrum_producer: triple_buffer::Input<SpectrumData>,
-    /// Speed setting for temporal smoothing
-    speed: SpectrumSpeed,
     /// Count of FFT failures (for debugging without impacting performance)
     fft_failure_count: std::sync::atomic::AtomicU32,
 }
 
-/// Builder for configuring SpectrumProducer initialization
-pub struct SpectrumProducerBuilder {
-    window_size: NonZeroUsize,
-    speed: SpectrumSpeed,
-    window_strategy: Option<AdaptiveWindowStrategy>,
-}
-
-impl Default for SpectrumProducerBuilder {
-    fn default() -> Self {
-        Self {
-            window_size: SPECTRUM_WINDOW_SIZE,
-            speed: SpectrumSpeed::Medium,
-            window_strategy: None,
-        }
-    }
-}
-
-impl SpectrumProducerBuilder {
-    /// Create a new builder with default settings
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Set the FFT window size (must be power of 2)
-    #[must_use = "Builder methods must be chained"]
-    #[allow(dead_code)]
-    pub fn window_size(mut self, size: NonZeroUsize) -> Self {
-        debug_assert!(size.is_power_of_two(), "Window size must be power of 2");
-        self.window_size = size;
-        self
-    }
-
-    /// Set the spectrum speed (temporal smoothing)
-    #[must_use = "Builder methods must be chained"]
-    pub fn speed(mut self, speed: SpectrumSpeed) -> Self {
-        self.speed = speed;
-        self
-    }
-
-    /// Set a custom window strategy
-    #[must_use = "Builder methods must be chained"]
-    #[allow(dead_code)]
-    pub fn window_strategy(mut self, strategy: AdaptiveWindowStrategy) -> Self {
-        self.window_strategy = Some(strategy);
-        self
-    }
-
-    /// Build the SpectrumProducer and consumer pair
+impl SpectrumProducer {
+    /// Create a new SpectrumProducer and consumer pair
     #[must_use = "SpectrumProducer and consumer must be used"]
-    pub fn build(self) -> (SpectrumProducer, SpectrumConsumer) {
-        // For now, we keep the window size fixed to SPECTRUM_WINDOW_SIZE
-        // Future enhancement: support dynamic window sizes
-        assert_eq!(
-            self.window_size.get(),
-            SPECTRUM_WINDOW_SIZE_USIZE,
-            "Dynamic window sizes not yet supported"
-        );
-
-        // Create lock-free communication channel
+    pub fn new() -> (SpectrumProducer, SpectrumConsumer) {
+        // Create lock-free communication channel initialized with maximum possible size
         let (spectrum_producer, spectrum_consumer) =
-            TripleBuffer::new(&[SPECTRUM_FLOOR_DB; SPECTRUM_BINS]).split();
+            TripleBuffer::new(&vec![SPECTRUM_FLOOR_DB; MAX_SPECTRUM_BINS]).split();
 
-        // Initialize FFT processor
+        // Initialize FFT processor with configured size
         let mut fft_planner = RealFftPlanner::<f32>::new();
-        let fft_processor = fft_planner.plan_fft_forward(SPECTRUM_WINDOW_SIZE_USIZE);
+        let fft_processor = fft_planner.plan_fft_forward(MAX_FFT_SIZE_USIZE);
 
-        // Use provided strategy or default
-        let window_strategy = self.window_strategy.unwrap_or_default();
-
-        // Pre-compute windows for different frequency ranges
-        let low_coeffs = window_strategy
-            .low_freq_window
-            .generate(SPECTRUM_WINDOW_SIZE_USIZE);
-        let mid_coeffs = window_strategy
-            .mid_freq_window
-            .generate(SPECTRUM_WINDOW_SIZE_USIZE);
-        let high_coeffs = window_strategy
-            .high_freq_window
-            .generate(SPECTRUM_WINDOW_SIZE_USIZE);
-
-        let adaptive_windows = AdaptiveWindows {
-            low_freq: WindowData {
-                coherent_gain: window_strategy.low_freq_window.coherent_gain(&low_coeffs),
-                coefficients: low_coeffs,
-            },
-            mid_freq: WindowData {
-                coherent_gain: window_strategy.mid_freq_window.coherent_gain(&mid_coeffs),
-                coefficients: mid_coeffs,
-            },
-            high_freq: WindowData {
-                coherent_gain: window_strategy.high_freq_window.coherent_gain(&high_coeffs),
-                coefficients: high_coeffs,
-            },
-        };
+        // Generate Hann window for maximum size
+        let window_coefficients = WindowType::Hann.generate(MAX_FFT_SIZE_USIZE);
 
         let analyser = SpectrumProducer {
             fft_processor,
-            window_strategy,
-            adaptive_windows,
-            ring_buffer: vec![0.0; SPECTRUM_WINDOW_SIZE_USIZE * RING_BUFFER_SIZE_MULTIPLIER], // 2x size for overlap
+            window_coefficients,
+            ring_buffer: vec![0.0; MAX_FFT_SIZE_USIZE * RING_BUFFER_SIZE_MULTIPLIER],
             ring_buffer_pos: 0,
             samples_since_fft: 0,
-            time_domain_buffer: vec![0.0; SPECTRUM_WINDOW_SIZE_USIZE],
-            frequency_domain_buffer: vec![Complex32::new(0.0, 0.0); SPECTRUM_BINS],
-            spectrum_result: [SPECTRUM_FLOOR_DB; SPECTRUM_BINS],
-            previous_spectrum: [SPECTRUM_FLOOR_DB; SPECTRUM_BINS],
+            time_domain_buffer: vec![0.0; MAX_FFT_SIZE_USIZE],
+            frequency_domain_buffer: vec![Complex32::new(0.0, 0.0); MAX_SPECTRUM_BINS],
+            spectrum_result: vec![SPECTRUM_FLOOR_DB; ResolutionLevel::Medium.to_bin_count()],
+            previous_spectrum: vec![SPECTRUM_FLOOR_DB; ResolutionLevel::Medium.to_bin_count()],
+            current_resolution: ResolutionLevel::Medium,
             spectrum_producer,
-            speed: self.speed,
             fft_failure_count: std::sync::atomic::AtomicU32::new(0),
         };
 
         (analyser, SpectrumConsumer::new(spectrum_consumer))
     }
-}
-
-impl SpectrumProducer {
-    /// Create a new builder for configuring SpectrumProducer
-    #[must_use = "Builder must be configured and built"]
-    pub fn builder() -> SpectrumProducerBuilder {
-        SpectrumProducerBuilder::new()
-    }
 
     /// Write silence to the spectrum buffer (used when plugin is deactivated)
     /// This ensures the UI gets actual silence instead of stale audio data
     pub fn write_silence(&mut self) {
-        let silence = [SPECTRUM_FLOOR_DB; SPECTRUM_BINS];
+        // Use current spectrum_result size to maintain resolution
+        let silence = vec![SPECTRUM_FLOOR_DB; self.spectrum_result.len()];
         self.spectrum_producer.write(silence);
     }
 
@@ -295,14 +186,19 @@ impl SpectrumProducer {
 
     /// Compute spectrum from audio buffer and send to UI thread
     /// Called from audio thread - must be real-time safe (no allocations)
-    pub fn process(&mut self, buffer: &Buffer, sample_rate: f32) {
+    pub fn process(
+        &mut self,
+        buffer: &Buffer,
+        sample_rate: f32,
+        tilt: TiltLevel,
+        speed: SpectrumSpeed,
+        resolution: ResolutionLevel,
+    ) {
         // Add incoming samples to ring buffer
         self.add_samples_to_ring_buffer(buffer);
 
-        // Check if we should process FFT (50% overlap = every WINDOW_SIZE/2 samples)
-        if self.samples_since_fft
-            >= (SPECTRUM_WINDOW_SIZE_USIZE as f32 * FFT_OVERLAP_FACTOR) as usize
-        {
+        // Check if enough samples have been accumulated for next FFT
+        if self.samples_since_fft >= (MAX_FFT_SIZE_USIZE as f32 * FFT_OVERLAP_FACTOR) as usize {
             self.samples_since_fft = 0;
 
             // Copy from ring buffer to FFT buffer
@@ -317,19 +213,27 @@ impl SpectrumProducer {
                 &mut self.frequency_domain_buffer,
             ) {
                 // FFT failed - skip this frame to maintain real-time safety
-                // Just increment counter for debugging, no logging in audio thread
                 self.fft_failure_count
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 return;
             }
 
-            // Convert complex FFT output to magnitude spectrum in dB
-            self.compute_magnitude_spectrum(sample_rate);
+            // Check if resolution changed and resize buffers if needed
+            if self.current_resolution != resolution {
+                self.resize_buffers_for_resolution(resolution);
+            }
 
-            // Apply perceptual smoothing (attack/release envelope)
-            self.apply_spectrum_smoothing(sample_rate);
+            // Convert complex FFT output to magnitude spectrum and sample to target resolution
+            self.compute_magnitude_spectrum(resolution);
+
+            // Apply temporal envelope (Speed parameter - attack/release dynamics)
+            self.apply_temporal_envelope(sample_rate, speed);
+
+            // Apply tilt compensation as visual adjustment
+            self.apply_tilt_compensation(sample_rate, tilt);
+
             // Send result to UI thread (lock-free)
-            self.spectrum_producer.write(self.spectrum_result);
+            self.spectrum_producer.write(self.spectrum_result.clone());
         }
     }
 
@@ -361,15 +265,15 @@ impl SpectrumProducer {
         });
     }
 
-    /// Copy most recent SPECTRUM_WINDOW_SIZE samples from ring buffer to FFT buffer
+    /// Copy most recent samples from ring buffer to FFT buffer
     fn copy_from_ring_buffer(&mut self) {
         let ring_len = self.ring_buffer.len();
 
         // Start position: current pos minus window size
-        let start_pos = if self.ring_buffer_pos >= SPECTRUM_WINDOW_SIZE_USIZE {
-            self.ring_buffer_pos - SPECTRUM_WINDOW_SIZE_USIZE
+        let start_pos = if self.ring_buffer_pos >= MAX_FFT_SIZE_USIZE {
+            self.ring_buffer_pos - MAX_FFT_SIZE_USIZE
         } else {
-            ring_len - (SPECTRUM_WINDOW_SIZE_USIZE - self.ring_buffer_pos)
+            ring_len - (MAX_FFT_SIZE_USIZE - self.ring_buffer_pos)
         };
 
         // Copy samples (handle wrap-around) using iterators
@@ -384,141 +288,103 @@ impl SpectrumProducer {
 
     /// Apply windowing in-place to time domain buffer
     fn apply_window(&mut self) {
-        // Use mid-frequency window as default for initial windowing
-        let coeffs = &self.adaptive_windows.mid_freq.coefficients;
-        for (sample, &coeff) in self.time_domain_buffer.iter_mut().zip(coeffs.iter()) {
+        // Apply Hann window to reduce spectral leakage
+        for (sample, &coeff) in self
+            .time_domain_buffer
+            .iter_mut()
+            .zip(self.window_coefficients.iter())
+        {
             *sample *= coeff;
         }
     }
 
-    /// Convert complex FFT output to magnitude spectrum and store in internal buffer
-    fn compute_magnitude_spectrum(&mut self, sample_rate: f32) {
-        // Process with adaptive windowing
-        let magnitude_spectrum = self.compute_adaptive_magnitude_spectrum(sample_rate);
-        self.spectrum_result.copy_from_slice(&magnitude_spectrum);
+    /// Resize buffers when resolution changes
+    fn resize_buffers_for_resolution(&mut self, new_resolution: ResolutionLevel) {
+        let new_bin_count = new_resolution.to_bin_count();
+
+        // Resize spectrum buffers to match new resolution
+        self.spectrum_result
+            .resize(new_bin_count, SPECTRUM_FLOOR_DB);
+        self.previous_spectrum
+            .resize(new_bin_count, SPECTRUM_FLOOR_DB);
+
+        // Update current resolution
+        self.current_resolution = new_resolution;
     }
 
-    /// Compute spectrum with a specific window and return the result
-    fn compute_spectrum_with_window(
-        &mut self,
-        audio_samples: &[f32],
-        window_coeffs: &[f32],
-        coherent_gain: f32,
-        sample_rate: f32,
-    ) -> Vec<f32> {
-        // Apply window
-        let windowed = apply_window(audio_samples, window_coeffs);
-        self.time_domain_buffer.copy_from_slice(&windowed);
+    /// Convert complex FFT output to magnitude spectrum and sample to target resolution
+    fn compute_magnitude_spectrum(&mut self, resolution: ResolutionLevel) {
+        // Get full magnitude spectrum from FFT
+        let full_magnitude_spectrum =
+            compute_magnitude_spectrum(&self.frequency_domain_buffer, MAX_FFT_SIZE_USIZE);
 
-        // Perform FFT
-        let mut freq_buffer = vec![Complex32::new(0.0, 0.0); SPECTRUM_BINS];
-        let _ = self
-            .fft_processor
-            .process(&mut self.time_domain_buffer, &mut freq_buffer);
+        // Sample to target resolution using interpolation for better quality
+        let target_bin_count = resolution.to_bin_count();
+        for i in 0..target_bin_count {
+            // Map target bin to source bin with fractional indexing
+            let source_pos =
+                (i as f32 * (MAX_SPECTRUM_BINS - 1) as f32) / (target_bin_count - 1) as f32;
+            let source_idx = source_pos.floor() as usize;
+            let fraction = source_pos.fract();
 
-        // Convert to magnitude spectrum
-        compute_magnitude_spectrum(
-            &freq_buffer,
-            SPECTRUM_WINDOW_SIZE_USIZE,
-            coherent_gain,
-            sample_rate,
-        )
+            // Linear interpolation between adjacent bins
+            let value = if source_idx + 1 < MAX_SPECTRUM_BINS {
+                let current = full_magnitude_spectrum[source_idx];
+                let next = full_magnitude_spectrum[source_idx + 1];
+                current + (next - current) * fraction
+            } else {
+                full_magnitude_spectrum[source_idx]
+            };
+
+            self.spectrum_result[i] = value;
+        }
     }
 
-    /// Compute magnitude spectrum with adaptive windowing for different frequency ranges
-    fn compute_adaptive_magnitude_spectrum(&mut self, sample_rate: f32) -> Vec<f32> {
-        // Save original audio data
-        let original_buffer = self.time_domain_buffer.clone();
+    /// Apply tilt compensation as final visual adjustment
+    /// Tilts the spectrum around 1kHz for perceptually flat response
+    fn apply_tilt_compensation(&mut self, sample_rate: f32, tilt: TiltLevel) {
+        let tilt_db_per_oct = tilt.to_db_per_octave();
 
-        // Extract window data to avoid borrowing issues
-        let low_coeffs = self.adaptive_windows.low_freq.coefficients.clone();
-        let low_gain = self.adaptive_windows.low_freq.coherent_gain;
-        let mid_coeffs = self.adaptive_windows.mid_freq.coefficients.clone();
-        let mid_gain = self.adaptive_windows.mid_freq.coherent_gain;
-        let high_coeffs = self.adaptive_windows.high_freq.coefficients.clone();
-        let high_gain = self.adaptive_windows.high_freq.coherent_gain;
+        // Skip if no tilt is needed
+        if tilt_db_per_oct == 0.0 {
+            return;
+        }
 
-        // Compute spectrum with each window type
-        let low_spectrum =
-            self.compute_spectrum_with_window(&original_buffer, &low_coeffs, low_gain, sample_rate);
+        let target_bin_count = self.spectrum_result.len();
+        for (bin_idx, db_value) in self.spectrum_result.iter_mut().enumerate() {
+            // Only apply tilt to signals above noise floor
+            if *db_value > SPECTRUM_FLOOR_DB + 10.0 {
+                // Calculate frequency for this bin based on actual resolution
+                // Map from decimated bin index back to frequency
+                let source_pos = (bin_idx as f32 * (MAX_SPECTRUM_BINS - 1) as f32)
+                    / (target_bin_count - 1) as f32;
+                let freq_hz = (source_pos * sample_rate) / MAX_FFT_SIZE_USIZE as f32;
 
-        let mid_spectrum =
-            self.compute_spectrum_with_window(&original_buffer, &mid_coeffs, mid_gain, sample_rate);
-
-        let high_spectrum = self.compute_spectrum_with_window(
-            &original_buffer,
-            &high_coeffs,
-            high_gain,
-            sample_rate,
-        );
-
-        // Restore original buffer state
-        self.time_domain_buffer.copy_from_slice(&original_buffer);
-
-        // Blend the three spectrums based on frequency
-        self.window_strategy.blend_frequency_spectrums(
-            &low_spectrum,
-            &mid_spectrum,
-            &high_spectrum,
-            sample_rate,
-            SPECTRUM_WINDOW_SIZE_USIZE,
-        )
+                // Apply tilt compensation
+                *db_value = apply_tilt_compensation(*db_value, freq_hz, tilt_db_per_oct);
+            }
+        }
     }
 
-    /// Apply perceptual smoothing and update internal state
-    fn apply_spectrum_smoothing(&mut self, sample_rate: f32) {
-        let (smoothed_spectrum, updated_previous) = apply_spectrum_smoothing(
+    /// Apply temporal envelope (attack/release) controlled by Speed parameter
+    fn apply_temporal_envelope(&mut self, sample_rate: f32, speed: SpectrumSpeed) {
+        let (envelope_spectrum, updated_previous) = apply_temporal_envelope_sized(
             &self.spectrum_result,
             &self.previous_spectrum,
-            self.speed,
+            speed,
             sample_rate,
+            MAX_FFT_SIZE_USIZE,
         );
-        self.spectrum_result.copy_from_slice(&smoothed_spectrum);
+        self.spectrum_result.copy_from_slice(&envelope_spectrum);
         self.previous_spectrum.copy_from_slice(&updated_previous);
     }
 }
 
-/// Multiplies audio samples by window function coefficients
-///
-/// Element-wise multiplication of samples and window coefficients. This is the
-/// core windowing operation that shapes the time-domain signal before FFT,
-/// reducing spectral leakage by smoothly tapering edges to zero.
-///
-/// # Parameters
-/// * `samples` - Time-domain audio samples to be windowed
-/// * `window_function` - Pre-computed window coefficients [0.0..1.0]
-///
-/// # Returns
-/// Vector of windowed samples, same length as input
-///
-/// # Mathematical Background
-/// Windowing: y[n] = x[n] * w[n] for n = 0..N-1
-/// - Time domain: multiplication
-/// - Frequency domain: convolution with window's spectrum
-/// - Reduces discontinuity energy at frame boundaries
-///
-/// # Why Window?
-/// - Unwindowed FFT assumes signal is periodic (wraps around)
-/// - Real signals aren't periodic in arbitrary frames
-/// - Discontinuity at edges spreads energy across all frequencies
-/// - Window makes signal smoothly go to zero at edges
-///
-/// # References
-/// - "The Fundamentals of FFT-Based Signal Analysis" - National Instruments
-/// - https://www.ni.com/docs/en-US/bundle/labview/page/lvanlsconcepts/windowing.html
-pub fn apply_window(samples: &[f32], window_function: &[f32]) -> Vec<f32> {
-    samples
-        .iter()
-        .zip(window_function.iter())
-        .map(|(&sample, &window_coeff)| sample * window_coeff)
-        .collect()
-}
-
-/// Converts complex FFT output to magnitude spectrum in dB with tilt compensation
+/// Converts complex FFT output to magnitude spectrum in dB
 ///
 /// Transforms raw FFT complex numbers into a magnitude spectrum suitable for display.
 /// Applies proper scaling for single-sided spectrum, compensates for window energy loss,
-/// converts to dB scale, and applies frequency tilt for perceptually flat response.
+/// and converts to dB scale.
 ///
 /// # Parameters
 /// * `frequency_bins` - Complex FFT output bins (N/2+1 for real FFT)
@@ -534,7 +400,6 @@ pub fn apply_window(samples: &[f32], window_function: &[f32]) -> Vec<f32> {
 /// 2. Single-sided scaling: 2/N for k>0, 1/N for DC (k=0)
 /// 3. Window compensation: divide by coherent gain
 /// 4. dB conversion: 20*log10(amplitude)
-/// 5. Tilt: +4.5dB/octave from 1kHz reference
 ///
 /// # Scaling Explanation
 /// - FFT produces two-sided spectrum, we show single-sided
@@ -543,75 +408,54 @@ pub fn apply_window(samples: &[f32], window_function: &[f32]) -> Vec<f32> {
 /// - Window reduces amplitude by coherent gain factor
 ///
 /// # Implementation Notes
-/// - Floor at -120dB prevents log(0) errors
-/// - Tilt compensation reveals high-frequency detail
+/// - Floor at -140dB prevents log(0) errors
 /// - Reference: AES17 standard for digital audio measurement
 ///
 /// # References
 /// - "Spectral Audio Signal Processing" by Julius O. Smith III
 /// - AES17-2015 "AES standard method for digital audio engineering"
 /// - https://ccrma.stanford.edu/~jos/sasp/Spectrum_Analysis_Windows.html
-pub fn compute_magnitude_spectrum(
-    frequency_bins: &[Complex32],
-    window_size: usize,
-    window_coherent_gain: f32,
-    sample_rate: f32,
-) -> Vec<f32> {
-    let spectrum_with_tilt: Vec<f32> = frequency_bins
+pub fn compute_magnitude_spectrum(frequency_bins: &[Complex32], window_size: usize) -> Vec<f32> {
+    let window_coherent_gain = 0.5; // Hann window ACF (amplitude correction factor)
+    let spectrum: Vec<f32> = frequency_bins
         .iter()
         .enumerate()
         .map(|(bin_idx, &complex_bin)| {
-            // Calculate magnitude
+            // Calculate magnitude (not power)
             let magnitude = complex_bin.norm();
-            // According to spectrum.md: Use proper 2/N scaling for single-sided spectrum
-            let scaling = if bin_idx == 0 {
-                // DC component: no factor of 2
-                1.0 / window_size as f32
-            } else {
-                // All other bins: factor of 2 for single-sided spectrum
-                2.0 / window_size as f32
-            };
-            // Apply window compensation (spectrum.md: divide by coherent gain)
-            let amplitude = magnitude * scaling / window_coherent_gain;
 
-            // Convert to dBFS according to AES17 standard (spectrum.md)
-            let db_value = if amplitude > MIN_AMPLITUDE_THRESHOLD {
-                DB_CONVERSION_FACTOR * amplitude.log10()
+            // Correct scaling for magnitude spectrum with window compensation
+            let nyquist_bin = window_size / 2;
+            let scaling = if bin_idx == 0 || bin_idx == nyquist_bin {
+                // DC and Nyquist: already single-sided, no factor of 2, no RMS conversion
+                1.0 / (window_size as f32 * window_coherent_gain)
+            } else {
+                // AC bins: factor of 2 for single-sided, convert peak to RMS, compensate for window
+                (2.0 / (2.0_f32).sqrt()) / (window_size as f32 * window_coherent_gain)
+            };
+
+            let normalized_magnitude = magnitude * scaling;
+
+            // Convert to dBFS using 20*log10 for magnitude (not power)
+            let db_value = if normalized_magnitude > MIN_AMPLITUDE_THRESHOLD {
+                20.0 * normalized_magnitude.log10()
             } else {
                 SPECTRUM_FLOOR_DB
             };
-            // Calculate frequency for this bin
-            let freq_hz = (bin_idx as f32 * sample_rate) / window_size as f32;
-
-            // Debug logging for 1kHz region
-            if freq_hz >= 950.0 && freq_hz <= 1050.0 && amplitude > MIN_AMPLITUDE_THRESHOLD {
-                nih_plug::nih_log!("FFT bin {}: freq={:.1}Hz, magnitude={:.6}, scaling={:.6}, coherent_gain={:.6}, amplitude={:.6}, db={:.1}dB",
-                    bin_idx, freq_hz, magnitude, scaling, window_coherent_gain, amplitude, db_value);
-            }
-
-            // Apply tilt compensation
-            let tilted_db = apply_tilt_compensation(db_value, freq_hz, SPECTRUM_TILT_DB_PER_OCT);
-
-            // Debug: log final values being sent to UI
-            if freq_hz >= 950.0 && freq_hz <= 1050.0 && tilted_db > -50.0 {
-                nih_plug::nih_log!("Final to UI - bin {}: freq={:.1}Hz, before_tilt={:.1}dB, after_tilt={:.1}dB",
-                    bin_idx, freq_hz, db_value, tilted_db);
-            }
 
             // Apply floor clamping
-            tilted_db.max(SPECTRUM_FLOOR_DB)
+            db_value.max(SPECTRUM_FLOOR_DB)
         })
         .collect();
 
-    spectrum_with_tilt
+    spectrum
 }
 
-/// Applies frequency-dependent tilt compensation to flatten spectrum display
+/// Applies frequency-dependent tilt compensation for visual adjustment
 ///
-/// Pink noise naturally has -3dB/octave slope. Musical content often has
-/// similar characteristics. By applying positive tilt (boost increasing with
-/// frequency), we make the spectrum appear flatter and reveal high-frequency
-/// detail that would otherwise be hidden.
+/// Tilts the spectrum display around 1kHz to provide perceptually flat response.
+/// This is a visual-only adjustment applied as the final step in the processing chain.
+/// Common values: 3dB/oct (pink noise flat), 4.5dB/oct (natural perception)
 ///
 /// # Parameters
 /// * `magnitude_db` - Original magnitude in dB
@@ -639,174 +483,55 @@ fn apply_tilt_compensation(magnitude_db: f32, freq_hz: f32, tilt_db_per_oct: f32
     magnitude_db + (tilt_db_per_oct * octaves_from_reference)
 }
 
-/// Applies temporal smoothing using asymmetric attack/release envelope
+/// Apply temporal envelope with attack/release dynamics (Speed parameter)
 ///
-/// Smooths spectrum display over time to reduce visual noise while preserving
-/// transient response. Uses faster attack (shows increases quickly) and slower
-/// release (decays gradually) mimicking analog spectrum analysers and VU meters.
+/// Implements fast attack and slow release for musical response:
+/// - Fast attack: Immediate response to rising signals
+/// - Slow release: Gradual decay controlled by Speed parameter
 ///
 /// # Parameters
 /// * `current_spectrum` - New spectrum values from current FFT frame
-/// * `previous_spectrum` - Smoothed spectrum from previous frame
+/// * `previous_spectrum` - Spectrum from previous frame with temporal envelope applied
+/// * `speed` - Controls response time for decay characteristics
+/// * `sample_rate` - Sample rate for timing calculations
+/// * `fft_size` - FFT size for calculating frame rate
 ///
 /// # Returns
-/// Tuple of (smoothed_spectrum, updated_previous) for next iteration
-///
-/// # Mathematical Background
-/// Exponential smoothing: y[n] = y[n-1] + α*(x[n] - y[n-1])
-/// - Attack (rising): α = SPECTRUM_ATTACK (typically 0.3)
-/// - Release (falling): α = SPECTRUM_RELEASE (typically 0.05)
-/// - α = 1: no smoothing (instant response)
-/// - α = 0: infinite smoothing (no change)
-///
-/// # Time Constants
-/// - Attack: ~3-10 frames to reach 95% of new value
-/// - Release: ~60-100 frames to decay to 5% of original
-/// - Asymmetry makes peaks visible while reducing flicker
-///
-/// # Perceptual Rationale
-/// - Fast attack ensures transients aren't missed
-/// - Slow release makes spectrum easier to read
-/// - Similar to peak program meters (PPM) in broadcasting
-/// - Reduces eye fatigue from rapidly changing display
-///
-/// # References
-/// - "Digital Audio Metering" by Eddy Brixen
-/// - IEC 60268-10 "Peak programme level meters"
-pub fn apply_spectrum_smoothing(
+/// Tuple of (envelope_applied_spectrum, updated_previous) for next iteration
+pub fn apply_temporal_envelope_sized(
     current_spectrum: &[f32],
     previous_spectrum: &[f32],
     speed: SpectrumSpeed,
     sample_rate: f32,
+    fft_size: usize,
 ) -> (Vec<f32>, Vec<f32>) {
-    // Calculate FFT frame rate (with 50% overlap)
-    // FFT happens every WINDOW_SIZE * FFT_OVERLAP_FACTOR samples
-    let fft_frame_rate = sample_rate / (SPECTRUM_WINDOW_SIZE_USIZE as f32 * FFT_OVERLAP_FACTOR);
+    // Calculate envelope factor based on response time
+    // The release factor determines how much of the previous value to keep
+    let response_time_ms = speed.response_time_ms();
 
-    // Get time constants for selected speed
-    let (attack_ms, release_ms) = speed.time_constants_ms();
+    // Calculate how many FFT frames occur per second
+    let fft_hop_size = fft_size as f32 * (1.0 - FFT_OVERLAP_FACTOR);
+    let fft_frames_per_second = sample_rate / fft_hop_size;
 
-    // Convert to alpha coefficients
-    let attack_alpha = calculate_smoothing_alpha(attack_ms, fft_frame_rate);
-    let release_alpha = calculate_smoothing_alpha(release_ms, fft_frame_rate);
+    // Calculate release factor: higher value = slower decay
+    // Using exponential decay: factor = exp(-dt/tau) where tau is the time constant
+    let time_constant_seconds = response_time_ms / 1000.0;
+    let dt = 1.0 / fft_frames_per_second; // Time between FFT frames
+    let release_factor = (-dt / time_constant_seconds).exp();
 
-    let temporally_smoothed: Vec<f32> = current_spectrum
+    let envelope_applied: Vec<f32> = current_spectrum
         .iter()
         .zip(previous_spectrum.iter())
         .map(|(&current_db, &previous_db)| {
             if current_db > previous_db {
-                // Attack: fast response to increases
-                previous_db + (current_db - previous_db) * attack_alpha
+                // Rising signal - immediate response (fast attack)
+                current_db
             } else {
-                // Release: slow decay
-                previous_db + (current_db - previous_db) * release_alpha
+                // Falling signal - gradual decay (slow release)
+                previous_db * release_factor + current_db * (1.0 - release_factor)
             }
         })
         .collect();
 
-    // Apply frequency-dependent smoothing to reduce high-frequency noise
-    // let smoothed = apply_frequency_dependent_smoothing(&temporally_smoothed, sample_rate);
-    let smoothed = temporally_smoothed.clone(); // Temporarily disable frequency smoothing
-
-    let result = smoothed.clone();
-    (result.clone(), result)
-}
-
-/// Apply frequency-dependent smoothing to reduce high-frequency noise
-///
-/// Progressive smoothing approach: leave low frequencies sharp for detail,
-/// apply increasing smoothing for mid and high frequencies for cleaner appearance.
-/// Based on professional spectrum analyser smoothing strategies.
-pub fn apply_frequency_dependent_smoothing(spectrum: &[f32], sample_rate: f32) -> Vec<f32> {
-    let mut smoothed = spectrum.to_vec();
-    let window_size = SPECTRUM_WINDOW_SIZE_USIZE;
-
-    // Apply frequency-dependent smoothing kernel
-    for i in 1..spectrum.len() - 1 {
-        let freq = (i as f32 * sample_rate) / window_size as f32;
-
-        if freq > SMOOTHING_HIGH_FREQ_HZ {
-            // High frequencies (>5kHz): Very aggressive 9-point smoothing
-            let kernel_size = HIGH_FREQ_KERNEL_SIZE.min(spectrum.len() - 1);
-            let half_kernel = kernel_size / 2;
-            let start_idx = i.saturating_sub(half_kernel);
-            let end_idx = (i + half_kernel).min(spectrum.len() - 1);
-
-            let mut sum = 0.0;
-            let mut weight_sum = 0.0;
-
-            // Very strong Gaussian weighting for aggressive smoothing
-            for j in start_idx..=end_idx {
-                let distance = (j as i32 - i as i32).abs() as f32;
-                let weight = (-distance * distance / GAUSSIAN_SIGMA_STRONG).exp(); // Stronger Gaussian (smaller sigma)
-                sum += spectrum[j] * weight;
-                weight_sum += weight;
-            }
-
-            if weight_sum > 0.0 {
-                smoothed[i] = sum / weight_sum;
-            }
-        } else if freq > SMOOTHING_MID_HIGH_FREQ_HZ {
-            // Mid-high frequencies (2-5kHz): 7-point smoothing
-            let kernel_size = MID_HIGH_FREQ_KERNEL_SIZE.min(spectrum.len() - 1);
-            let half_kernel = kernel_size / 2;
-            let start_idx = i.saturating_sub(half_kernel);
-            let end_idx = (i + half_kernel).min(spectrum.len() - 1);
-
-            let mut sum = 0.0;
-            let mut weight_sum = 0.0;
-
-            for j in start_idx..=end_idx {
-                let distance = (j as i32 - i as i32).abs() as f32;
-                let weight = (-distance * distance / GAUSSIAN_SIGMA_MODERATE).exp();
-                sum += spectrum[j] * weight;
-                weight_sum += weight;
-            }
-
-            if weight_sum > 0.0 {
-                smoothed[i] = sum / weight_sum;
-            }
-        } else if freq > SMOOTHING_MID_FREQ_HZ {
-            // Mid frequencies (800Hz-2kHz): 5-point smoothing
-            let prev2 = spectrum.get(i.saturating_sub(2)).unwrap_or(&spectrum[i]);
-            let prev = spectrum[i - 1];
-            let curr = spectrum[i];
-            let next = spectrum[i + 1];
-            let next2 = spectrum.get(i + 2).unwrap_or(&spectrum[i]);
-
-            smoothed[i] = prev2 * SMOOTH_WEIGHT_OUTER
-                + prev * SMOOTH_WEIGHT_INNER
-                + curr * SMOOTH_WEIGHT_CENTER
-                + next * SMOOTH_WEIGHT_INNER
-                + next2 * SMOOTH_WEIGHT_OUTER;
-        }
-        // Leave frequencies < 1kHz unchanged for maximum detail
-    }
-
-    smoothed
-}
-
-/// Converts time constant in milliseconds to exponential filter coefficient
-///
-/// For exponential smoothing: y[n] = α*x[n] + (1-α)*y[n-1]
-/// Where α = 1 - exp(-Δt/τ)
-/// - Δt = time between updates (FFT frame period)
-/// - τ = time constant (how long to reach 63.2% of target)
-///
-/// # Parameters
-/// * `time_ms` - Time constant in milliseconds
-/// * `update_rate_hz` - How often the smoothing is applied (FFT frame rate)
-///
-/// # Returns
-/// Alpha coefficient [0..1] where 1 = instant, 0 = no change
-fn calculate_smoothing_alpha(time_ms: f32, update_rate_hz: f32) -> f32 {
-    if time_ms <= 0.0 {
-        return 1.0; // Instant response
-    }
-
-    let tau = time_ms / 1000.0; // Convert to seconds
-    let update_period = 1.0 / update_rate_hz;
-
-    // Exponential filter formula
-    1.0 - (-update_period / tau).exp()
+    (envelope_applied.clone(), envelope_applied)
 }
