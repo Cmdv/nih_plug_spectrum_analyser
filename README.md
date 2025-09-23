@@ -4,12 +4,16 @@ A real-time audio spectrum analyzer plugin built with [NIH-plug](https://github.
 
 ## Features
 
-- **Real-time FFT spectrum analysis** with 2048-point FFT for 23.4Hz resolution at 48kHz
+- **Real-time FFT spectrum analysis** with configurable resolution levels (128-2049 bins)
+- **Resolution-adaptive curve smoothing** - Automatic curve radius adjustment based on resolution level
+  - Low resolution: Large radius curves for smooth, flowing visualization
+  - High resolution: Tight radius curves preserving fine detail
+  - Frequency-aware smoothing: Larger curves for low frequencies, detailed high frequencies
 - **Adaptive windowing** - Different window functions for low, mid, and high frequencies
 - **Lock-free audio/UI communication** using triple buffering
 - **Level metering** with peak hold and smoothed decay
 - **Perceptual tilt compensation** (+4.5dB/octave) for flatter visual response
-- **Frequency-dependent smoothing** for cleaner high-frequency display
+- **Catmull-Rom spline rendering** for professional-grade smooth spectrum curves
 - **Zero allocation in audio thread** - Real-time safe processing
 
 ## Architecture

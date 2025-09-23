@@ -102,11 +102,6 @@ impl MeterDisplay {
         let led_count = 110;
         let led_gap = 1.0;
 
-        // Debug logging
-        if channel == Channel::Left {
-            nih_plug::nih_log!("Meter drawing - Left channel: {:.2} dB", level_db);
-        }
-
         let leds = generate_meter_leds(position, size, level_db, channel, led_count, led_gap);
 
         let gradient = create_meter_gradient(
@@ -192,10 +187,7 @@ pub fn create_meter_gradient(start_point: Point, end_point: Point) -> Linear {
             0.95,
             Color::from_rgb(214.0 / 255.0, 198.0 / 255.0, 82.0 / 255.0),
         ) // Yellow at 95%
-        .add_stop(
-            0.97,
-            Color::from_rgb(255.0 / 255.0, 140.0 / 255.0, 0.0),
-        ) // Orange transition
+        .add_stop(0.97, Color::from_rgb(255.0 / 255.0, 140.0 / 255.0, 0.0)) // Orange transition
         .add_stop(
             1.0,
             Color::from_rgb(255.0 / 255.0, 77.0 / 255.0, 26.0 / 255.0),

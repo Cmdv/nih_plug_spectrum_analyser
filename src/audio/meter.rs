@@ -15,13 +15,13 @@ const PEAK_HOLD_CYCLES: u32 = 60;
 /// Silence threshold - below this level, trigger faster decay
 const SILENCE_THRESHOLD_DB: f32 = -50.0;
 
-/// Silence detection delay in frames before applying fast decay
+/// Delay in frames before applying fast decay to silent signals
 const SILENCE_DECAY_DELAY_FRAMES: u32 = 30; // About 0.5 seconds at 60fps
 
 /// Linear decay rate for silence (dB per frame)
 const SILENCE_DECAY_RATE_DB_PER_FRAME: f32 = 0.5;
 
-/// Minimum level before setting to -inf (silence floor)
+/// Minimum displayable level (silence floor)
 const METER_FLOOR_DB: f32 = -80.0;
 
 /// Peak levels for stereo audio
@@ -100,8 +100,10 @@ impl MeterProducer {
 
     /// Write silence to the meter (called when processing stops)
     pub fn write_silence(&self) {
-        self.peak_left.store(util::MINUS_INFINITY_DB, Ordering::Relaxed);
-        self.peak_right.store(util::MINUS_INFINITY_DB, Ordering::Relaxed);
+        self.peak_left
+            .store(util::MINUS_INFINITY_DB, Ordering::Relaxed);
+        self.peak_right
+            .store(util::MINUS_INFINITY_DB, Ordering::Relaxed);
     }
 }
 
@@ -206,7 +208,7 @@ impl MeterConsumer {
     fn update_smoothing(&self, state: &mut MeterState, left_db: f32, right_db: f32) {
         // Left channel smoothing with attack/release envelope
         if left_db > state.smoothed_left {
-            // Attack: fast response to increases (like a peak meter)
+            // Attack: fast response to signal increases
             state.smoothed_left =
                 left_db * METER_ATTACK + state.smoothed_left * (1.0 - METER_ATTACK);
         } else {
@@ -225,7 +227,7 @@ impl MeterConsumer {
         }
     }
 
-    /// Update peak hold indicators (sticky peaks like hardware meters)
+    /// Update peak hold indicators with timed decay behavior
     fn update_peak_hold(&self, state: &mut MeterState, left_db: f32, right_db: f32) {
         // Check if we have new peak values
         let mut new_peak = false;

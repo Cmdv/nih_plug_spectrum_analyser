@@ -1839,6 +1839,7 @@ dependencies = [
 [[package]]
 name = "nih_plug"
 version = "0.0.0"
+source = "git+https://github.com/Cmdv/nih-plug.git?branch=expose-process-stopped#6f6eb6d32d1ac174e274d9fb1027412d34a90c09"
 dependencies = [
  "anyhow",
  "anymap3",
@@ -1874,6 +1875,7 @@ source = "git+https://github.com/robbert-vdh/nih_plug_assets.git#a04e327923e120b
 [[package]]
 name = "nih_plug_derive"
 version = "0.1.0"
+source = "git+https://github.com/Cmdv/nih-plug.git?branch=expose-process-stopped#6f6eb6d32d1ac174e274d9fb1027412d34a90c09"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1883,6 +1885,7 @@ dependencies = [
 [[package]]
 name = "nih_plug_iced"
 version = "0.0.0"
+source = "git+https://github.com/Cmdv/nih_plug_iced.git#1024243bcc0016700e991cce53ff76ecf49f85cd"
 dependencies = [
  "atomic_refcell",
  "baseview",

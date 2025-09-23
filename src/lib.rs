@@ -4,15 +4,99 @@ mod ui;
 
 use atomic_float::AtomicF32;
 use audio::meter::{create_meter_channels, MeterConsumer, MeterProducer};
-use audio::spectrum::{SpectrumConsumer, SpectrumProducer};
+use audio::spectrum::{SpectrumConsumer, SpectrumProducer, SpectrumSpeed};
 use editor::EditorInitFlags;
 use editor::PluginEditor;
 use nih_plug::prelude::*;
 use nih_plug_iced::{create_iced_editor, IcedState};
-use std::sync::{atomic::{AtomicBool, Ordering}, Arc};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
+
+#[derive(Enum, PartialEq, Clone)]
+enum AmplitudeRange {
+    #[id = "60db"]
+    #[name = "60 dB"]
+    Range60dB,
+    #[id = "90db"]
+    #[name = "90 dB"]
+    Range90dB,
+    #[id = "120db"]
+    #[name = "120 dB"]
+    Range120dB,
+}
+
+impl AmplitudeRange {
+    fn to_db_range(&self) -> (f32, f32) {
+        match self {
+            AmplitudeRange::Range60dB => (-60.0, 0.0),
+            AmplitudeRange::Range90dB => (-90.0, 0.0),
+            AmplitudeRange::Range120dB => (-120.0, 0.0),
+        }
+    }
+}
+
+#[derive(Enum, PartialEq, Clone, Copy)]
+enum ResolutionLevel {
+    #[id = "low"]
+    #[name = "Low (1024)"]
+    Low,
+    #[id = "medium"]
+    #[name = "Medium (2048)"]
+    Medium,
+    #[id = "high"]
+    #[name = "High (4096)"]
+    High,
+    #[id = "maximum"]
+    #[name = "Maximum (8192)"]
+    Maximum,
+}
+
+impl ResolutionLevel {
+    pub fn to_bin_count(&self) -> usize {
+        match self {
+            ResolutionLevel::Low => 128,      // Smoothest - fewer bins
+            ResolutionLevel::Medium => 256,   // Medium detail
+            ResolutionLevel::High => 512,     // High detail
+            ResolutionLevel::Maximum => 2049, // All bins (4096 FFT / 2 + 1)
+        }
+    }
+}
+
+#[derive(Enum, PartialEq)]
+enum TiltLevel {
+    #[id = "none"]
+    #[name = "None (0 dB/oct)"]
+    None,
+    #[id = "subtle"]
+    #[name = "Subtle (3 dB/oct)"]
+    Subtle,
+    #[id = "natural"]
+    #[name = "Natural (4.5 dB/oct)"]
+    Natural,
+    #[id = "standard"]
+    #[name = "Standard (6 dB/oct)"]
+    Standard,
+    #[id = "strong"]
+    #[name = "Strong (9 dB/oct)"]
+    Strong,
+}
+
+impl TiltLevel {
+    fn to_db_per_octave(&self) -> f32 {
+        match self {
+            TiltLevel::None => 0.0,
+            TiltLevel::Subtle => 3.0,
+            TiltLevel::Natural => 4.5,
+            TiltLevel::Standard => 6.0,
+            TiltLevel::Strong => 9.0,
+        }
+    }
+}
 
 struct SAPlugin {
-    // PLUGIN PARAMETERS (empty for now, but keeps the structure)
+    // Plugin parameters
     params: Arc<SAPluginParams>,
 
     // SHARED STATE (thread-safe, read by both audio and UI)
@@ -34,16 +118,26 @@ struct SAPlugin {
 }
 
 #[derive(Params)]
-struct SAPluginParams {}
+struct SAPluginParams {
+    #[id = "range"]
+    pub range: EnumParam<AmplitudeRange>,
+
+    #[id = "resolution"]
+    pub resolution: EnumParam<ResolutionLevel>,
+
+    #[id = "speed"]
+    pub speed: EnumParam<SpectrumSpeed>,
+
+    #[id = "tilt"]
+    pub tilt: EnumParam<TiltLevel>,
+}
 
 impl Default for SAPlugin {
     fn default() -> Self {
         let sample_rate = Arc::new(AtomicF32::new(44100.0));
 
         // Configure the spectrum analyzer
-        let (audio_spectrum_producer, ui_spectrum_consumer) = SpectrumProducer::builder()
-            .speed(audio::spectrum::SpectrumSpeed::Medium) // Default speed for balanced response
-            .build();
+        let (audio_spectrum_producer, ui_spectrum_consumer) = SpectrumProducer::new();
 
         let (audio_meter_producer, ui_meter_consumer) = create_meter_channels();
 
@@ -71,7 +165,12 @@ impl Default for SAPlugin {
 
 impl Default for SAPluginParams {
     fn default() -> Self {
-        SAPluginParams {}
+        Self {
+            range: EnumParam::new("Range", AmplitudeRange::Range90dB),
+            resolution: EnumParam::new("Resolution", ResolutionLevel::Medium),
+            speed: EnumParam::new("Speed", SpectrumSpeed::Medium),
+            tilt: EnumParam::new("Tilt", TiltLevel::Natural),
+        }
     }
 }
 
@@ -125,27 +224,18 @@ impl Plugin for SAPlugin {
         // Store sample rate for communication with UI
         self.sample_rate
             .store(buffer_config.sample_rate, Ordering::Relaxed);
-
-        nih_plug::nih_log!(
-            "Plugin initialized - sample_rate: {}, buffer_size: {}",
-            buffer_config.sample_rate,
-            buffer_config.max_buffer_size
-        );
-
         true
     }
 
     fn reset(&mut self) {
         // Called when processing starts/resumes
         self.process_stopped.store(false, Ordering::Relaxed);
-        nih_plug::nih_log!("Processing started - UI should activate");
     }
 
     fn process_stopped(&mut self) {
         self.audio_spectrum_producer.write_silence();
         self.audio_meter_producer.write_silence();
         self.process_stopped.store(true, Ordering::Relaxed);
-        nih_plug::nih_log!("Processing stopped - UI should grey out");
     }
 
     fn process(
@@ -155,7 +245,14 @@ impl Plugin for SAPlugin {
         _context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
         let sample_rate = self.sample_rate.load(Ordering::Relaxed);
-        self.audio_spectrum_producer.process(buffer, sample_rate);
+
+        // Read current parameter values
+        let tilt = self.params.tilt.value();
+        let speed = self.params.speed.value();
+        let resolution = self.params.resolution.value();
+
+        self.audio_spectrum_producer
+            .process(buffer, sample_rate, tilt, speed, resolution);
         self.audio_meter_producer.update_peaks(buffer);
 
         ProcessStatus::Normal
@@ -163,6 +260,7 @@ impl Plugin for SAPlugin {
 
     fn editor(&mut self, _async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
         let init_flags = EditorInitFlags {
+            plugin_params: self.params.clone(),
             sample_rate: self.sample_rate.clone(),
             process_stopped: self.process_stopped.clone(),
             spectrum_output: self.ui_spectrum_consumer.clone(),
