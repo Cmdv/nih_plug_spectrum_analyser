@@ -134,10 +134,11 @@ impl GridOverlay {
                 color: text_color,
                 size: text_size,
                 font: Font::default(),
-                horizontal_alignment: h_align,
-                vertical_alignment: v_align,
+                align_x: h_align.into(),
+                align_y: v_align.into(),
                 line_height: nih_plug_iced::widget::text::LineHeight::default(),
                 shaping: nih_plug_iced::widget::text::Shaping::default(),
+                max_width: f32::INFINITY,
             };
 
             frame.fill_text(text);

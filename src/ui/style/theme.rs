@@ -29,7 +29,7 @@ impl UITheme {
     pub const METER_WIDTH: f32 = 40.0;
 
     /// Margins and padding
-    pub const PADDING_SMALL: u16 = 5;
+    pub const PADDING_SMALL: f32 = 5.0;
 
     pub const SPECTRUM_MARGIN_BOTTOM: f32 = 30.0; // Space for frequency labels
     pub const SPECTRUM_MARGIN_RIGHT: f32 = 30.0; // Space for dB labels on right side

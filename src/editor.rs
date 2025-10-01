@@ -1,6 +1,6 @@
 use crate::audio::meter::MeterConsumer;
 use crate::audio::spectrum::SpectrumConsumer;
-use crate::ui::{GridOverlay, MeterDisplay, SpectrumDisplay, UITheme};
+use crate::ui::{GridOverlay, MeterDisplay, SpectrumDisplay, UITheme, GridShader};
 use crate::SAPluginParams;
 
 use atomic_float::AtomicF32;
@@ -8,7 +8,7 @@ use nih_plug::context::gui::GuiContext;
 use nih_plug_iced::executor::Default;
 use nih_plug_iced::futures::Subscription;
 use nih_plug_iced::widget::canvas::Canvas;
-use nih_plug_iced::widget::{column, container, row, stack, text};
+use nih_plug_iced::widget::{column, container, row, stack, text, shader};
 use nih_plug_iced::Padding;
 use nih_plug_iced::{alignment::Horizontal, Element, IcedEditor, Length, Renderer, Task, Theme};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -51,6 +51,9 @@ pub struct PluginEditor {
     spectrum_display: SpectrumDisplay,
     grid_overlay: GridOverlay,
     meter_display: MeterDisplay,
+
+    /// GPU SHADERS - High performance rendering
+    grid_shader: GridShader,
 
     /// GUI CONTEXT
     context: Arc<dyn GuiContext>,
@@ -160,6 +163,9 @@ impl IcedEditor for PluginEditor {
             grid_overlay: GridOverlay::new(),
             meter_display: MeterDisplay::new(editor_data.meter_output.clone()),
 
+            // GPU SHADERS - High performance rendering
+            grid_shader: GridShader::new(),
+
             // GROUPED DATA
             editor_data,
             context,
@@ -206,12 +212,24 @@ impl IcedEditor for PluginEditor {
             .height(Length::Fill)
             .padding(Padding::default().bottom(30)); // 30px bottom padding
 
-        let grid_canvas = Canvas::new(&self.grid_overlay)
+        // Canvas-based grid (existing) - commented out for shader testing
+        let _grid_canvas: Canvas<&GridOverlay, Message> = Canvas::new(&self.grid_overlay)
             .width(Length::FillPortion(6))
             .height(Length::Fill);
 
-        // Stack the canvases on top of each other
-        let layered_spectrum = stack![spectrum_container, grid_canvas];
+        // GPU shader-based grid (new - for testing)
+        // This demonstrates our WGPU grid shader working alongside the canvas
+        let grid_shader_widget = shader(&self.grid_shader)
+            .width(Length::FillPortion(6))
+            .height(Length::Fill);
+
+        // Stack the canvases and shader on top of each other
+        // Both grids will render - we can compare performance and visual quality
+        let layered_spectrum = stack![
+            spectrum_container,
+            // grid_canvas,        // Comment out canvas grid to see shader grid
+            grid_shader_widget,    // Our new GPU-accelerated grid
+        ];
 
         let db_display =
             create_db_display(self.editor_data.meter_output.get_peak_hold_db_or_silence());
@@ -241,6 +259,6 @@ impl IcedEditor for PluginEditor {
     }
 
     fn theme(&self) -> Self::Theme {
-        Theme::default() // Use default dark theme
+        Theme::Dark
     }
 }
