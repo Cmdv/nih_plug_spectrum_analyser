@@ -8,7 +8,7 @@ impl UITheme {
     // === COLORS ===
 
     /// Background colors
-    pub const BACKGROUND_MAIN: Color = Color::from_rgb(0.08, 0.08, 0.12);
+    pub const BACKGROUND_MAIN: Color = Color::from_rgb(0.114, 0.114, 0.114);
 
     /// Grid and border colors
     pub const GRID_LINE: Color = Color::from_rgba(0.3, 0.3, 0.4, 0.3);

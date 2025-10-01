@@ -23,25 +23,30 @@ pub struct Uniforms {
     // Screen resolution in pixels - needed to calculate aspect ratio and scaling
     pub resolution: [f32; 2],
 
-    // Width of grid lines in pixels (0.5 pixels like original)
+    // Width of all grid lines in pixels (uniform thickness)
     pub line_width: f32,
 
     // Spectrum area margins (matching UITheme constants)
     pub spectrum_margin_right: f32,
     pub spectrum_margin_bottom: f32,
 
-    // Padding for alignment (currently unused but kept for struct size)
-    pub padding: f32,
+    // Inset from right edge where grid stops (leaves room for frequency labels)
+    pub grid_inset_right: f32,
+
+    // Padding for alignment (ensures struct meets GPU alignment requirements)
+    // WGSL uniform buffers require proper alignment - do not remove
+    pub _padding: [f32; 2],
 }
 
 impl Uniforms {
     pub fn new(bounds: &Rectangle) -> Self {
         Self {
             resolution: [bounds.width, bounds.height],
-            line_width: 0.5,  // 0.5 pixels like UITheme::GRID_LINE_WIDTH
-            spectrum_margin_right: 30.0,  // UITheme::SPECTRUM_MARGIN_RIGHT
-            spectrum_margin_bottom: 30.0, // UITheme::SPECTRUM_MARGIN_BOTTOM
-            padding: 0.0,  // Unused
+            line_width: 0.3,         // Line anti-aliasing width (smoothstep falloff distance)
+            spectrum_margin_right: 30.0,  // Right margin for frequency labels
+            spectrum_margin_bottom: 30.0, // Bottom margin for amplitude labels
+            grid_inset_right: 20.0,  // Stop grid 20px before right edge for label space
+            _padding: [0.0, 0.0],    // Alignment padding
         }
     }
 }
@@ -53,13 +58,18 @@ impl Uniforms {
 pub struct GridMetadata {
     pub db_line_count: u32,
     pub freq_line_count: u32,
-    pub major_freq_count: u32,
-    pub _padding: u32,  // For 16-byte alignment
+    // Padding for 16-byte alignment (ensures struct size is multiple of 16)
+    // WGSL requires proper alignment - do not remove
+    // Matches WGSL: _padding: [u32; 2]
+    pub _padding: [u32; 2],
 }
 
 // Helper function to build line position data
 // Returns (metadata, positions_vec) where positions contains:
-// [db_normalized_positions...][freq_normalized_positions...][major_indices...]
+// [db_normalized_positions...][freq_normalized_positions...][is_major_flags...]
+//
+// The flag array structure allows O(1) lookup in the fragment shader to determine
+// line type without nested loops, improving per-pixel performance
 fn build_grid_data() -> (GridMetadata, Vec<f32>) {
     let mut positions = Vec::new();
 
@@ -73,28 +83,48 @@ fn build_grid_data() -> (GridMetadata, Vec<f32>) {
 
     // Generate frequency positions with major/minor distinction
     let freq_positions = constants::generate_frequency_grid_positions();
-    let mut major_indices = Vec::new();
 
-    for (idx, &(freq, is_major)) in freq_positions.iter().enumerate() {
+    // First, add all frequency positions
+    for &(freq, _is_major) in freq_positions.iter() {
         let log_pos = constants::freq_to_log_position(freq);
         positions.push(log_pos);
-
-        if is_major {
-            major_indices.push(idx as f32);
-        }
     }
     let freq_line_count = freq_positions.len() as u32;
-    let major_freq_count = major_indices.len() as u32;
 
-    // Add major frequency indices
-    positions.extend(major_indices);
+    // Then, add is_major flags as parallel array (1.0 = major, 0.0 = minor)
+    // Parallel flag array enables constant-time line type determination in shader
+    for &(_freq, is_major) in freq_positions.iter() {
+        positions.push(if is_major { 1.0 } else { 0.0 });
+    }
 
     let metadata = GridMetadata {
         db_line_count,
         freq_line_count,
-        major_freq_count,
-        _padding: 0,
+        _padding: [0, 0],
     };
+
+    // Debug: Print first few frequencies and their major status
+    nih_plug::nih_log!("Grid data - dB lines: {}, freq lines: {}", db_line_count, freq_line_count);
+    nih_plug::nih_log!("First 20 frequencies with major flags:");
+    for (idx, &(freq, is_major)) in freq_positions.iter().take(20).enumerate() {
+        nih_plug::nih_log!("  [{}] {}Hz - major: {}", idx, freq, is_major);
+    }
+
+    // Debug: Print the actual flag array values in the buffer
+    let flag_offset = (db_line_count + freq_line_count) as usize;
+    nih_plug::nih_log!("Flag array starts at index {} in positions buffer", flag_offset);
+    nih_plug::nih_log!("First 20 flag values in buffer:");
+    for i in 0..20.min(freq_line_count as usize) {
+        nih_plug::nih_log!("  flag[{}] = {}", i, positions[flag_offset + i]);
+    }
+
+    // Debug: Print log positions for major frequencies
+    nih_plug::nih_log!("Log positions for major frequencies:");
+    nih_plug::nih_log!("  100Hz  (idx 8):  log_pos = {}", positions[db_line_count as usize + 8]);
+    nih_plug::nih_log!("  1000Hz (idx 17): log_pos = {}", positions[db_line_count as usize + 17]);
+    if freq_line_count > 26 {
+        nih_plug::nih_log!("  10kHz  (idx 26): log_pos = {}", positions[db_line_count as usize + 26]);
+    }
 
     (metadata, positions)
 }
@@ -331,10 +361,10 @@ impl GridPipeline {
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
     }
 
-    // Legacy method for compatibility (deprecated)
+    // Alternative update method that accepts line counts (currently unused)
+    // Line counts are determined by constants in build_grid_data()
     #[allow(dead_code)]
     pub fn update_with_lines(&mut self, queue: &Queue, bounds: &Rectangle, _h_lines: u32, _v_lines: u32) {
-        // Line counts are now hardcoded in the shader, so ignore them
         self.update_with_bounds(queue, bounds);
     }
 
