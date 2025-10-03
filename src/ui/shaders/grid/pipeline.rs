@@ -42,7 +42,7 @@ impl Uniforms {
     pub fn new(bounds: &Rectangle) -> Self {
         Self {
             resolution: [bounds.width, bounds.height],
-            line_width: 0.3,         // Line anti-aliasing width (smoothstep falloff distance)
+            line_width: 0.8,         // Line anti-aliasing width (smoothstep falloff distance)
             spectrum_margin_right: 30.0,  // Right margin for frequency labels
             spectrum_margin_bottom: 30.0, // Bottom margin for amplitude labels
             grid_inset_right: 20.0,  // Stop grid 20px before right edge for label space
@@ -102,29 +102,6 @@ fn build_grid_data() -> (GridMetadata, Vec<f32>) {
         freq_line_count,
         _padding: [0, 0],
     };
-
-    // Debug: Print first few frequencies and their major status
-    nih_plug::nih_log!("Grid data - dB lines: {}, freq lines: {}", db_line_count, freq_line_count);
-    nih_plug::nih_log!("First 20 frequencies with major flags:");
-    for (idx, &(freq, is_major)) in freq_positions.iter().take(20).enumerate() {
-        nih_plug::nih_log!("  [{}] {}Hz - major: {}", idx, freq, is_major);
-    }
-
-    // Debug: Print the actual flag array values in the buffer
-    let flag_offset = (db_line_count + freq_line_count) as usize;
-    nih_plug::nih_log!("Flag array starts at index {} in positions buffer", flag_offset);
-    nih_plug::nih_log!("First 20 flag values in buffer:");
-    for i in 0..20.min(freq_line_count as usize) {
-        nih_plug::nih_log!("  flag[{}] = {}", i, positions[flag_offset + i]);
-    }
-
-    // Debug: Print log positions for major frequencies
-    nih_plug::nih_log!("Log positions for major frequencies:");
-    nih_plug::nih_log!("  100Hz  (idx 8):  log_pos = {}", positions[db_line_count as usize + 8]);
-    nih_plug::nih_log!("  1000Hz (idx 17): log_pos = {}", positions[db_line_count as usize + 17]);
-    if freq_line_count > 26 {
-        nih_plug::nih_log!("  10kHz  (idx 26): log_pos = {}", positions[db_line_count as usize + 26]);
-    }
 
     (metadata, positions)
 }
@@ -351,13 +328,42 @@ impl GridPipeline {
         self.update_with_bounds(queue, bounds);
     }
 
-    // Update uniform data with current bounds
+    // Update uniform data with current bounds (logical size)
+    // Note: This may cause zooming if scale factor changes
     pub fn update_with_bounds(&mut self, queue: &Queue, bounds: &Rectangle) {
         // Create new uniforms with current bounds
         let uniforms = Uniforms::new(bounds);
 
         // Write the uniform data to GPU
         // bytemuck::bytes_of safely converts our struct to raw bytes
+        queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
+    }
+
+    // Update uniform data with physical size for accurate rendering
+    // This is the preferred method to avoid zoom/scale issues
+    pub fn update_with_physical_size(
+        &mut self,
+        queue: &Queue,
+        bounds: &Rectangle,
+        physical_size: nih_plug_iced::Size<u32>,
+    ) {
+        // Calculate scale factor from physical vs logical size
+        let scale_x = physical_size.width as f32 / bounds.width;
+        let scale_y = physical_size.height as f32 / bounds.height;
+
+        // Use physical dimensions for resolution (what the GPU actually renders)
+        // Scale the margins proportionally to maintain their logical sizes
+        let uniforms = Uniforms {
+            resolution: [physical_size.width as f32, physical_size.height as f32],
+            line_width: 0.8,
+            // Scale margins from logical to physical space
+            spectrum_margin_right: 30.0 * scale_x,
+            spectrum_margin_bottom: 30.0 * scale_y,
+            grid_inset_right: 20.0 * scale_x,
+            _padding: [0.0, 0.0],
+        };
+
+        // Write the uniform data to GPU
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
     }
 

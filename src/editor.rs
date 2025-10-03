@@ -9,7 +9,8 @@ use nih_plug_iced::executor::Default;
 use nih_plug_iced::futures::Subscription;
 use nih_plug_iced::widget::canvas::Canvas;
 use nih_plug_iced::widget::{column, container, row, stack, text, shader};
-use nih_plug_iced::Padding;
+use nih_plug_iced::widgets::ResizeHandle;
+use nih_plug_iced::{window, IcedState, Padding};
 use nih_plug_iced::{alignment::Horizontal, Element, IcedEditor, Length, Renderer, Task, Theme};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -18,6 +19,10 @@ use std::sync::Arc;
 pub enum Message {
     /// Timer tick for regular redraws
     Tick,
+    /// User dragged resize handle to request new size
+    RequestResize(nih_plug_iced::Size),
+    /// Window was actually resized (from baseview/iced event)
+    WindowResized(nih_plug_iced::Size),
 }
 
 /// Grouped UI data structure
@@ -41,6 +46,7 @@ pub struct EditorInitFlags {
     pub process_stopped: Arc<AtomicBool>,
     pub spectrum_output: SpectrumConsumer,
     pub meter_output: MeterConsumer,
+    pub iced_state: Arc<IcedState>,
 }
 
 pub struct PluginEditor {
@@ -57,6 +63,9 @@ pub struct PluginEditor {
 
     /// GUI CONTEXT
     context: Arc<dyn GuiContext>,
+
+    /// ICED STATE - For window resize
+    iced_state: Arc<IcedState>,
 }
 
 /// Create spectrum analyser canvas widget
@@ -166,6 +175,9 @@ impl IcedEditor for PluginEditor {
             // GPU SHADERS - High performance rendering
             grid_shader: GridShader::new(),
 
+            // ICED STATE
+            iced_state: initialization_flags.iced_state.clone(),
+
             // GROUPED DATA
             editor_data,
             context,
@@ -185,6 +197,21 @@ impl IcedEditor for PluginEditor {
                 // The canvas will automatically redraw with latest spectrum data
                 Task::none()
             }
+            Message::RequestResize(size) => {
+                // User dragged resize handle - request window resize through iced/baseview
+                // This will trigger a Window::Resized event which will call Message::WindowResized
+                window::resize(size)
+            }
+            Message::WindowResized(size) => {
+                // Window was actually resized (from baseview)
+                // Update iced_state to persist the size for next time window opens
+                self.iced_state.set_size(size.width as u32, size.height as u32);
+                // Notify the host that the window size changed
+                // If the host rejects it, it will resize us back
+                self.context.request_resize();
+                // No task needed - the window is already resized
+                Task::none()
+            }
         }
     }
 
@@ -194,6 +221,9 @@ impl IcedEditor for PluginEditor {
     ) -> Subscription<Self::Message> {
         // Set up a callback that runs before each frame render
         window_subs.on_frame = Some(Arc::new(|| Some(Message::Tick)));
+
+        // Set up a callback for window resize events
+        window_subs.on_resize = Some(Arc::new(|size| Some(Message::WindowResized(size))));
 
         // Return no additional subscriptions
         Subscription::none()
@@ -237,7 +267,24 @@ impl IcedEditor for PluginEditor {
 
         // Compose layout using pure functions
         let right_panel = create_right_panel(db_display, meter_canvas);
-        let main_content = create_main_layout_with_stack(layered_spectrum, right_panel);
+
+        // Add resize handle to the right panel at the bottom
+        let (current_width, current_height) = self.iced_state.size();
+        let current_size = nih_plug_iced::Size::new(current_width as f32, current_height as f32);
+
+        let right_panel_with_resize = column![
+            right_panel,
+            container(
+                ResizeHandle::new(current_size, |size| Message::RequestResize(size))
+                    .size(20.0)
+                    .min_size(400.0, 300.0)
+                    .color(nih_plug_iced::Color::from_rgba(0.7, 0.7, 0.7, 0.6))
+            )
+            .width(Length::Fill)
+            .align_x(Horizontal::Right)
+        ];
+
+        let main_content = create_main_layout_with_stack(layered_spectrum, right_panel_with_resize.into());
 
         // Apply grey overlay when processing is stopped
         if self.editor_data.process_stopped.load(Ordering::Relaxed) {

@@ -80,11 +80,16 @@ impl Primitive for GridPrimitive {
         _device: &wgpu::Device,
         queue: &wgpu::Queue,
         _bounds: &Rectangle,
-        _viewport: &nih_plug_iced::graphics::Viewport,
+        viewport: &nih_plug_iced::graphics::Viewport,
     ) {
-        // Update uniforms with current bounds
+        // Get physical size from viewport for accurate pixel-level rendering
+        // This ensures the grid is drawn at the actual screen resolution,
+        // not the logical size which would be scaled/zoomed
+        let physical_size = viewport.physical_size();
+
+        // Update uniforms with physical dimensions
         // This uploads the new data to the GPU
-        renderer.update(queue, &self.bounds);
+        renderer.update_with_physical_size(queue, &self.bounds, physical_size);
     }
 
     // Called to execute the actual rendering

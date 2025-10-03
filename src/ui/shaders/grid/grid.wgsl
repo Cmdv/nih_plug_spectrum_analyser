@@ -59,7 +59,8 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
 
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
-    // Convert UV to pixel coordinates
+    // Convert UV (0-1) to widget-local pixel coordinates
+    // UVs are widget-local, unlike @builtin(position) which is window-absolute
     let pixel_coord = input.uv * uniforms.resolution;
 
     // Calculate spectrum area
@@ -75,7 +76,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     }
 
     // Single base color with opacity for darkness
-    let base_color = vec3<f32>(0.3, 0.3, 0.3);  // Dark gray base color
+    let base_color = vec3<f32>(0.1, 0.1, 0.1);  // Darker gray base color
 
     var final_alpha = 0.0;
     var is_major_line = false;
@@ -85,11 +86,10 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     for (var i = 0u; i < grid_data.db_line_count; i++) {
         let normalized = line_positions[i];
         let line_y = spectrum_height * (1.0 - normalized);
-        let dist = abs(pixel_coord.y - line_y);
 
-        // Anti-aliased line rendering using smoothstep
-        // Creates smooth edges instead of hard cutoff for crisp thin lines
-        let line_contrib = 1.0 - smoothstep(0.0, uniforms.line_width, dist);
+        // Exact 1-pixel line: only the pixel containing the line center
+        // floor comparison ensures consistent single-pixel width regardless of sub-pixel position
+        let line_contrib = select(0.0, 1.0, floor(pixel_coord.y) == floor(line_y));
         if line_contrib > 0.0 {
             // dB lines are major lines with higher opacity
             final_alpha = max(final_alpha, line_contrib * 0.25);
@@ -104,17 +104,17 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     for (var i = 0u; i < grid_data.freq_line_count; i++) {
         let log_pos = line_positions[freq_start + i];
         let line_x = log_pos * spectrum_width;
-        let dist = abs(pixel_coord.x - line_x);
 
-        // Anti-aliased line rendering using smoothstep
-        let line_contrib = 1.0 - smoothstep(0.0, uniforms.line_width, dist);
+        // Exact 1-pixel line: only the pixel containing the line center
+        // floor comparison ensures consistent single-pixel width regardless of sub-pixel position
+        let line_contrib = select(0.0, 1.0, floor(pixel_coord.x) == floor(line_x));
         if line_contrib > 0.0 {
             // Direct O(1) flag lookup: 1.0 = major line, 0.0 = minor line
             let is_major_flag = line_positions[major_start + i];
             let is_major = is_major_flag >= 0.9;
 
             // Select opacity based on major/minor status
-            let alpha = select(0.1, 0.3, is_major);
+            let alpha = select(0.1, 0.6, is_major);  // Major lines now 6× brighter
             let contrib_alpha = line_contrib * alpha;
 
             // Take maximum alpha to handle intersections correctly

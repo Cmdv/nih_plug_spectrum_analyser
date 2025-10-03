@@ -17,7 +17,7 @@ crate-type = ["cdylib"]
 # This fork of nih_plug exposes process_stopped
 nih_plug = { git = "https://github.com/Cmdv/nih-plug.git", branch = "expose-process-stopped", features = ["assert_process_allocs"] }
 # This fork of nih_plug_iced is updated to use iced 0.14
-nih_plug_iced = { git = "https://github.com/Cmdv/nih_plug_iced.git", features = ["canvas", "svg", "wgpu"] }
+nih_plug_iced = { path = "/Users/cmdv/Code/Audio/nih_plug_iced", features = ["canvas", "svg", "wgpu"] }
 
 # Thread-safe audio buffering
 triple_buffer = "8.0"
