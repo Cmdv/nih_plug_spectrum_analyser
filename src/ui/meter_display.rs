@@ -118,7 +118,7 @@ impl MeterDisplay {
             if led.is_active {
                 frame.fill(&led.path, gradient_fill.clone());
             } else {
-                frame.fill(&led.path, UITheme::METER_BACKGROUND);
+                frame.fill(&led.path, UITheme::BACKGROUND_MAIN);
             }
         }
     }

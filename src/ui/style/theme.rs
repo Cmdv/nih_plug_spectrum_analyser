@@ -18,9 +18,6 @@ impl UITheme {
     pub const SPECTRUM_LINE: Color = Color::from_rgb(0.3, 1.0, 0.8); // Cyan curve
     pub const SPECTRUM_FILL: Color = Color::from_rgba(0.3, 1.0, 0.8, 0.15); // Semi-transparent fill
 
-    /// Level meter colors
-    pub const METER_BACKGROUND: Color = Color::from_rgba(0.1, 0.1, 0.12, 0.8);
-
     /// Text and label colors
     pub const TEXT_SECONDARY: Color = Color::from_rgba(0.6, 0.6, 0.6, 0.8);
     pub const TEXT_DB_MARKER: Color = Color::from_rgb(1.0, 1.0, 0.6); // Yellow for dB labels
@@ -40,7 +37,7 @@ impl UITheme {
     // === VISUAL HELPER FUNCTIONS ===
     pub fn background_dark(_theme: &Theme) -> Style {
         Style {
-            background: Some(color!(0x14141F).into()),
+            background: Some(color!(0x1D1D1D).into()),
             border: border::rounded(2),
             ..Style::default()
         }

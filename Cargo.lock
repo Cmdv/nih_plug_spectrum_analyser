@@ -258,7 +258,7 @@ checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 [[package]]
 name = "baseview"
 version = "0.1.0"
-source = "git+https://github.com/RustAudio/baseview.git?rev=579130ecb4f9f315ae52190af42f0ea46aeaa4a2#579130ecb4f9f315ae52190af42f0ea46aeaa4a2"
+source = "git+https://github.com/Cmdv/baseview.git?branch=resize-window#82f5e78963989651408ae132ebb6923d3bdb7888"
 dependencies = [
  "cocoa",
  "core-foundation 0.9.4",
@@ -1429,7 +1429,7 @@ checksum = "dfa686283ad6dd069f105e5ab091b04c62850d3e4cf5d67debad1933f55023df"
 [[package]]
 name = "iced_core"
 version = "0.14.0-dev"
-source = "git+https://github.com/iced-rs/iced?branch=master#0a34496c793fd87c235e764317351a0aacd4f6d1"
+source = "git+https://github.com/Cmdv/iced.git?branch=screen-cursor-location#450fafcac71196a867adcd892c45c44fdd3ed79d"
 dependencies = [
  "bitflags 2.9.4",
  "bytes",
@@ -1446,7 +1446,7 @@ dependencies = [
 [[package]]
 name = "iced_debug"
 version = "0.14.0-dev"
-source = "git+https://github.com/iced-rs/iced?branch=master#0a34496c793fd87c235e764317351a0aacd4f6d1"
+source = "git+https://github.com/Cmdv/iced.git?branch=screen-cursor-location#450fafcac71196a867adcd892c45c44fdd3ed79d"
 dependencies = [
  "iced_core",
  "iced_futures",
@@ -1456,7 +1456,7 @@ dependencies = [
 [[package]]
 name = "iced_futures"
 version = "0.14.0-dev"
-source = "git+https://github.com/iced-rs/iced?branch=master#0a34496c793fd87c235e764317351a0aacd4f6d1"
+source = "git+https://github.com/Cmdv/iced.git?branch=screen-cursor-location#450fafcac71196a867adcd892c45c44fdd3ed79d"
 dependencies = [
  "futures",
  "iced_core",
@@ -1470,7 +1470,7 @@ dependencies = [
 [[package]]
 name = "iced_graphics"
 version = "0.14.0-dev"
-source = "git+https://github.com/iced-rs/iced?branch=master#0a34496c793fd87c235e764317351a0aacd4f6d1"
+source = "git+https://github.com/Cmdv/iced.git?branch=screen-cursor-location#450fafcac71196a867adcd892c45c44fdd3ed79d"
 dependencies = [
  "bitflags 2.9.4",
  "bytemuck",
@@ -1489,7 +1489,7 @@ dependencies = [
 [[package]]
 name = "iced_renderer"
 version = "0.14.0-dev"
-source = "git+https://github.com/iced-rs/iced?branch=master#0a34496c793fd87c235e764317351a0aacd4f6d1"
+source = "git+https://github.com/Cmdv/iced.git?branch=screen-cursor-location#450fafcac71196a867adcd892c45c44fdd3ed79d"
 dependencies = [
  "iced_graphics",
  "iced_tiny_skia",
@@ -1501,7 +1501,7 @@ dependencies = [
 [[package]]
 name = "iced_runtime"
 version = "0.14.0-dev"
-source = "git+https://github.com/iced-rs/iced?branch=master#0a34496c793fd87c235e764317351a0aacd4f6d1"
+source = "git+https://github.com/Cmdv/iced.git?branch=screen-cursor-location#450fafcac71196a867adcd892c45c44fdd3ed79d"
 dependencies = [
  "bytes",
  "iced_core",
@@ -1514,7 +1514,7 @@ dependencies = [
 [[package]]
 name = "iced_tiny_skia"
 version = "0.14.0-dev"
-source = "git+https://github.com/iced-rs/iced?branch=master#0a34496c793fd87c235e764317351a0aacd4f6d1"
+source = "git+https://github.com/Cmdv/iced.git?branch=screen-cursor-location#450fafcac71196a867adcd892c45c44fdd3ed79d"
 dependencies = [
  "bytemuck",
  "cosmic-text",
@@ -1531,7 +1531,7 @@ dependencies = [
 [[package]]
 name = "iced_wgpu"
 version = "0.14.0-dev"
-source = "git+https://github.com/iced-rs/iced?branch=master#0a34496c793fd87c235e764317351a0aacd4f6d1"
+source = "git+https://github.com/Cmdv/iced.git?branch=screen-cursor-location#450fafcac71196a867adcd892c45c44fdd3ed79d"
 dependencies = [
  "bitflags 2.9.4",
  "bytemuck",
@@ -1552,7 +1552,7 @@ dependencies = [
 [[package]]
 name = "iced_widget"
 version = "0.14.0-dev"
-source = "git+https://github.com/iced-rs/iced?branch=master#0a34496c793fd87c235e764317351a0aacd4f6d1"
+source = "git+https://github.com/Cmdv/iced.git?branch=screen-cursor-location#450fafcac71196a867adcd892c45c44fdd3ed79d"
 dependencies = [
  "iced_renderer",
  "log",
@@ -1944,6 +1944,7 @@ dependencies = [
 [[package]]
 name = "nih_plug_iced"
 version = "0.0.0"
+source = "git+https://github.com/Cmdv/nih_plug_iced.git#30ee4814eed53aa340b4251a98f95177e35f8b3f"
 dependencies = [
  "atomic_refcell",
  "baseview",
