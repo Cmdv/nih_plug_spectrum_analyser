@@ -265,6 +265,7 @@ impl Plugin for SAPlugin {
             process_stopped: self.process_stopped.clone(),
             spectrum_output: self.ui_spectrum_consumer.clone(),
             meter_output: self.ui_meter_consumer.clone(),
+            iced_state: self.iced_state.clone(),
         };
 
         create_iced_editor::<PluginEditor>(

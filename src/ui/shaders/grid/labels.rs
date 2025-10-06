@@ -1,19 +1,19 @@
 use crate::audio::constants;
 use crate::ui::UITheme;
-use nih_plug_iced::widget::canvas::{Frame, Geometry, Path, Program, Stroke, Text};
+use nih_plug_iced::widget::canvas::{Frame, Geometry, Path, Program, Text};
 use nih_plug_iced::{mouse, Font, Point, Rectangle, Renderer, Size, Theme};
 
-/// Grid overlay component - draws static grid lines and labels
-/// No data processing, just visual grid elements
-pub struct GridOverlay;
+/// Label overlay for the shader grid - draws text labels only
+/// This renders on top of the shader grid using canvas text rendering
+pub struct GridLabels;
 
-impl GridOverlay {
+impl GridLabels {
     pub fn new() -> Self {
         Self
     }
 }
 
-impl<Message> Program<Message, Theme> for GridOverlay {
+impl<Message> Program<Message, Theme> for GridLabels {
     type State = ();
 
     fn draw(
@@ -26,9 +26,6 @@ impl<Message> Program<Message, Theme> for GridOverlay {
     ) -> Vec<Geometry> {
         let mut frame = Frame::new(renderer, bounds.size());
 
-        // Draw grid
-        self.draw_grid(&mut frame, bounds.size());
-
         // Draw frequency labels (bottom)
         self.draw_frequency_labels(&mut frame, bounds.size());
 
@@ -39,41 +36,7 @@ impl<Message> Program<Message, Theme> for GridOverlay {
     }
 }
 
-impl GridOverlay {
-    fn draw_grid(&self, frame: &mut Frame, size: Size) {
-        let stroke = Stroke::default()
-            .with_width(UITheme::GRID_LINE_WIDTH)
-            .with_color(UITheme::GRID_LINE);
-
-        // Calculate the spectrum area (same as used for spectrum drawing)
-        let spectrum_width = size.width - UITheme::SPECTRUM_MARGIN_RIGHT;
-        let spectrum_height = size.height - UITheme::SPECTRUM_MARGIN_BOTTOM;
-
-        // Draw horizontal grid lines using pure function
-        let db_grid_lines = generate_db_grid_lines(spectrum_width, spectrum_height);
-        for grid_line in db_grid_lines {
-            let path = Path::line(grid_line.start, grid_line.end);
-            frame.stroke(&path, stroke.clone());
-        }
-
-        // Draw vertical grid lines using pure function with different weights
-        let frequency_grid_lines =
-            generate_frequency_grid_lines_with_weights(spectrum_width, spectrum_height);
-        for (grid_line, is_major) in frequency_grid_lines {
-            let path = Path::line(grid_line.start, grid_line.end);
-            if is_major {
-                // Major lines (100Hz, 1kHz, 10kHz) - normal color
-                frame.stroke(&path, stroke.clone());
-            } else {
-                // Minor lines - lighter color
-                let light_stroke = Stroke::default()
-                    .with_width(UITheme::GRID_LINE_WIDTH)
-                    .with_color(UITheme::GRID_LINE_LIGHT);
-                frame.stroke(&path, light_stroke);
-            }
-        }
-    }
-
+impl GridLabels {
     /// Draw frequency labels at the bottom
     fn draw_frequency_labels(&self, frame: &mut Frame, size: Size) {
         let spectrum_width = size.width - UITheme::SPECTRUM_MARGIN_RIGHT;
@@ -88,7 +51,7 @@ impl GridOverlay {
                 let spectrum_height = size.height - UITheme::SPECTRUM_MARGIN_BOTTOM;
                 (log_pos * spectrum_width, spectrum_height + 10.0) // Just below the spectrum area
             },
-            nih_plug_iced::alignment::Horizontal::Left, // Align to right of position
+            nih_plug_iced::alignment::Horizontal::Left,
             nih_plug_iced::alignment::Vertical::Top,
         );
     }
@@ -146,42 +109,8 @@ impl GridOverlay {
     }
 }
 
-/// Grid line data for spectrum display
-pub struct GridLine {
-    pub start: Point,
-    pub end: Point,
-}
-
-/// Generate horizontal grid lines for dB levels
-pub fn generate_db_grid_lines(spectrum_width: f32, spectrum_height: f32) -> Vec<GridLine> {
-    constants::DB_MARKERS
-        .iter()
-        .map(|&(db, _)| {
-            let normalized = constants::db_to_normalized(db);
-            let y = spectrum_height * (1.0 - normalized);
-            GridLine {
-                start: Point::new(0.0, y),
-                end: Point::new(spectrum_width, y),
-            }
-        })
-        .collect()
-}
-
-pub fn generate_frequency_grid_lines_with_weights(
-    spectrum_width: f32,
-    spectrum_height: f32,
-) -> Vec<(GridLine, bool)> {
-    let frequency_positions = constants::generate_frequency_grid_positions();
-    frequency_positions
-        .iter()
-        .map(|&(freq, is_major)| {
-            let log_pos = constants::freq_to_log_position(freq);
-            let x = log_pos * spectrum_width;
-            let grid_line = GridLine {
-                start: Point::new(x, 0.0),
-                end: Point::new(x, spectrum_height),
-            };
-            (grid_line, is_major)
-        })
-        .collect()
+impl Default for GridLabels {
+    fn default() -> Self {
+        Self::new()
+    }
 }
