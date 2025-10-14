@@ -2,8 +2,23 @@
 
 # Build and Install Plugin Script (without development session)
 # This script builds the plugin, removes old version, and installs the new one
+# Usage: ./build.sh [--debug]
+#   --debug: Enable WGPU debug logging
 
 set -e  # Exit on any error
+
+# Parse command-line arguments
+DEBUG_MODE=false
+for arg in "$@"; do
+    case $arg in
+        --debug)
+            DEBUG_MODE=true
+            shift
+            ;;
+        *)
+            ;;
+    esac
+done
 
 # Prompt for sudo password upfront and keep alive
 echo "🔐 This script needs sudo access to install the plugin..."
@@ -23,7 +38,12 @@ else
 fi
 
 echo "🔨 Building plugin..."
-RUST_LOG=wgpu_core=debug,wgpu_hal=debug cargo xtask bundle $PLUGIN_NAME --release
+if [ "$DEBUG_MODE" = true ]; then
+    echo "🐛 Debug mode enabled - WGPU logging active"
+    RUST_LOG=wgpu_core=debug,wgpu_hal=debug cargo xtask bundle $PLUGIN_NAME --release
+else
+    cargo xtask bundle $PLUGIN_NAME --release
+fi
 
 echo "✅ Build completed!"
 
