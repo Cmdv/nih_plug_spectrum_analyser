@@ -1,6 +1,6 @@
 use crate::audio::meter::MeterConsumer;
 use crate::audio::spectrum::SpectrumConsumer;
-use crate::ui::{GridOverlay, MeterDisplay, SpectrumDisplay, UITheme, GridShader};
+use crate::ui::{MeterDisplay, UITheme, GridShader, SpectrumShader};
 use crate::SAPluginParams;
 
 use atomic_float::AtomicF32;
@@ -54,27 +54,20 @@ pub struct PluginEditor {
     editor_data: EditorData,
 
     /// DISPLAY COMPONENTS - Pure rendering
-    spectrum_display: SpectrumDisplay,
-    grid_overlay: GridOverlay,
     meter_display: MeterDisplay,
 
     /// GPU SHADERS - High performance rendering
     grid_shader: GridShader,
+    spectrum_shader: SpectrumShader,
 
     /// GUI CONTEXT
     context: Arc<dyn GuiContext>,
 
     /// ICED STATE - For window resize
     iced_state: Arc<IcedState>,
-}
 
-/// Create spectrum analyser canvas widget
-pub fn create_spectrum_canvas(
-    spectrum_display: &SpectrumDisplay,
-) -> Canvas<&SpectrumDisplay, Message> {
-    Canvas::new(spectrum_display)
-        .width(Length::FillPortion(6))
-        .height(Length::Fill)
+    /// Track if we have audio (to skip spectrum rendering when silent)
+    has_audio: bool,
 }
 
 /// Create dB value display text widget
@@ -164,16 +157,14 @@ impl IcedEditor for PluginEditor {
 
         let editor = Self {
             // DISPLAY COMPONENTS - Pure rendering with new communication channels
-            spectrum_display: SpectrumDisplay::new(
-                editor_data.spectrum_output.clone(),
-                editor_data.sample_rate.clone(),
-                editor_data.plugin_params.clone(),
-            ),
-            grid_overlay: GridOverlay::new(),
             meter_display: MeterDisplay::new(editor_data.meter_output.clone()),
 
             // GPU SHADERS - High performance rendering
             grid_shader: GridShader::new(),
+            spectrum_shader: SpectrumShader::new(
+                editor_data.sample_rate.clone(),
+                editor_data.plugin_params.clone(),
+            ),
 
             // ICED STATE
             iced_state: initialization_flags.iced_state.clone(),
@@ -181,6 +172,9 @@ impl IcedEditor for PluginEditor {
             // GROUPED DATA
             editor_data,
             context,
+
+            // Start with no audio
+            has_audio: false,
         };
 
         (editor, Task::none()) // Return editor and no initial task
@@ -193,8 +187,22 @@ impl IcedEditor for PluginEditor {
     fn update(&mut self, message: Self::Message) -> Task<Self::Message> {
         match message {
             Message::Tick => {
-                // Request a redraw by returning none
-                // The canvas will automatically redraw with latest spectrum data
+                // Update spectrum shader with latest data
+                if let Ok(spectrum_data) = self.editor_data.spectrum_output.read() {
+                    // Check if there's any meaningful audio (not just silence)
+                    // If all bins are near minimum dB, we have silence (empty buffers)
+                    let silence_threshold = -90.0; // dB threshold for "no audio"
+                    let has_audio = spectrum_data.iter().any(|&db| db > silence_threshold);
+
+                    // Update flag for view() to use
+                    self.has_audio = has_audio;
+
+                    if has_audio {
+                        self.spectrum_shader.update_spectrum_data(spectrum_data);
+                    }
+                    // If silent, don't update - this stops unnecessary redraws
+                }
+                // Request a redraw
                 Task::none()
             }
             Message::RequestResize(size) => {
@@ -219,13 +227,14 @@ impl IcedEditor for PluginEditor {
         &self,
         window_subs: &mut nih_plug_iced::window::WindowSubs<Self::Message>,
     ) -> Subscription<Self::Message> {
-        // Set up a callback that runs before each frame render
-        window_subs.on_frame = Some(Arc::new(|| Some(Message::Tick)));
-
         // Set up a callback for window resize events
         window_subs.on_resize = Some(Arc::new(|size| Some(Message::WindowResized(size))));
 
-        // Return no additional subscriptions
+        // Always run compositor frame updates to detect audio changes
+        // When silent, view() doesn't render spectrum shader (minimal GPU usage)
+        // Use compositor timing (vsync-aligned, ~60-70fps depending on display)
+        window_subs.on_frame = Some(Arc::new(|| Some(Message::Tick)));
+
         Subscription::none()
     }
 
@@ -234,32 +243,32 @@ impl IcedEditor for PluginEditor {
         self.editor_data.meter_output.update();
 
         // Create widgets using pure functions
-        let spectrum_canvas = create_spectrum_canvas(&self.spectrum_display);
-
-        // Wrap spectrum canvas in container with bottom padding to stop before -100 line
-        let spectrum_container = container(spectrum_canvas)
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .padding(Padding::default().bottom(30)); // 30px bottom padding
-
-        // Canvas-based grid (existing) - commented out for shader testing
-        let _grid_canvas: Canvas<&GridOverlay, Message> = Canvas::new(&self.grid_overlay)
-            .width(Length::FillPortion(6))
-            .height(Length::Fill);
-
-        // GPU shader-based grid (new - for testing)
-        // This demonstrates our WGPU grid shader working alongside the canvas
+        // GPU shader-based grid (always visible)
         let grid_shader_widget = shader(&self.grid_shader)
             .width(Length::FillPortion(6))
             .height(Length::Fill);
 
-        // Stack the canvases and shader on top of each other
-        // Both grids will render - we can compare performance and visual quality
-        let layered_spectrum = stack![
-            spectrum_container,
-            // grid_canvas,        // Comment out canvas grid to see shader grid
-            grid_shader_widget,    // Our new GPU-accelerated grid
-        ];
+        // Stack spectrum and grid shaders - only include spectrum when there's audio
+        let layered_spectrum = if self.has_audio {
+            // Use GPU shader for spectrum when there's audio
+            let spectrum_shader_widget = shader(&self.spectrum_shader)
+                .width(Length::FillPortion(6))
+                .height(Length::Fill);
+
+            // Wrap spectrum shader in container with bottom padding to stop before -100 line
+            let spectrum_container = container(spectrum_shader_widget)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .padding(Padding::default().bottom(30)); // 30px bottom padding
+
+            stack![
+                spectrum_container,
+                grid_shader_widget,
+            ]
+        } else {
+            // No audio - just show the grid
+            stack![grid_shader_widget]
+        };
 
         let db_display =
             create_db_display(self.editor_data.meter_output.get_peak_hold_db_or_silence());

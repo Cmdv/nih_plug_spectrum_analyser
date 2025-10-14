@@ -115,6 +115,12 @@ pub struct GridPipeline {
     // The compiled shader program and render state configuration
     render_pipeline: RenderPipeline,
 
+    // Blit pipeline to copy cached texture to screen
+    blit_pipeline: RenderPipeline,
+    blit_sampler: wgpu::Sampler,
+    blit_bind_group_layout: wgpu::BindGroupLayout,
+    blit_bind_group: Option<BindGroup>,
+
     // GPU buffer that holds our uniform data
     // Buffers are blocks of memory on the GPU
     uniform_buffer: wgpu::Buffer,
@@ -130,6 +136,22 @@ pub struct GridPipeline {
     // Bind group links our buffers/textures to shader variables
     // It's like connecting wires between CPU data and GPU shader inputs
     bind_group: BindGroup,
+
+    // Cached texture that holds the pre-rendered grid
+    // This texture is only re-rendered when size changes, dramatically reducing GPU usage
+    cached_texture: Option<wgpu::Texture>,
+    cached_texture_view: Option<wgpu::TextureView>,
+
+    // Texture format for the cached texture
+    texture_format: TextureFormat,
+
+    // Cache to avoid unnecessary buffer updates and texture re-renders
+    // Only update GPU buffer when bounds or size actually changes
+    last_bounds: Option<Rectangle>,
+    last_physical_size: Option<nih_plug_iced::Size<u32>>,
+
+    // Flag to track if we need to re-render the cached texture
+    needs_redraw: bool,
 }
 
 impl GridPipeline {
@@ -249,7 +271,96 @@ impl GridPipeline {
             multiview: None,  // Not using multiview rendering
         });
 
-        // Step 5: Build grid data from constants
+        // Step 5: Create blit shader and pipeline for copying cached texture to screen
+        let blit_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Grid Blit Shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("blit.wgsl").into()),
+        });
+
+        // Create sampler for texture sampling
+        let blit_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("Grid Blit Sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+
+        // Create bind group layout for blit (texture + sampler)
+        let blit_bind_group_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+            label: Some("Grid Blit Bind Group Layout"),
+            entries: &[
+                // Binding 0: Texture
+                BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: ShaderStages::FRAGMENT,
+                    ty: BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                // Binding 1: Sampler
+                BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: ShaderStages::FRAGMENT,
+                    ty: BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+
+        // Create pipeline layout for blit
+        let blit_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Grid Blit Pipeline Layout"),
+            bind_group_layouts: &[&blit_bind_group_layout],
+            push_constant_ranges: &[],
+        });
+
+        // Create blit render pipeline
+        let blit_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Grid Blit Render Pipeline"),
+            layout: Some(&blit_pipeline_layout),
+            cache: None,
+            vertex: wgpu::VertexState {
+                module: &blit_shader,
+                entry_point: Some("vs_main"),
+                buffers: &[],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &blit_shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleStrip,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                unclipped_depth: false,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                conservative: false,
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState {
+                count: 1,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
+            multiview: None,
+        });
+
+        // Step 6: Build grid data from constants
         let (metadata, positions) = build_grid_data();
 
         // Step 6: Create GPU buffers
@@ -315,10 +426,20 @@ impl GridPipeline {
 
         Self {
             render_pipeline,
+            blit_pipeline,
+            blit_sampler,
+            blit_bind_group_layout,
+            blit_bind_group: None,
             uniform_buffer,
             grid_metadata_buffer,
             line_positions_buffer,
             bind_group,
+            cached_texture: None,
+            cached_texture_view: None,
+            texture_format: format,
+            last_bounds: None,
+            last_physical_size: None,
+            needs_redraw: true, // Force initial render
         }
     }
 
@@ -347,6 +468,33 @@ impl GridPipeline {
         bounds: &Rectangle,
         physical_size: nih_plug_iced::Size<u32>,
     ) {
+        // Check if anything has changed - if not, skip the GPU buffer update
+        // This optimization prevents unnecessary buffer writes when the grid is static
+        let bounds_changed = self.last_bounds.map_or(true, |last| {
+            last.x != bounds.x ||
+            last.y != bounds.y ||
+            last.width != bounds.width ||
+            last.height != bounds.height
+        });
+
+        let size_changed = self.last_physical_size.map_or(true, |last| {
+            last.width != physical_size.width ||
+            last.height != physical_size.height
+        });
+
+        // Skip update if nothing changed - this is the key optimization
+        // Prevents writing to GPU buffer 60 times per second when grid is static
+        if !bounds_changed && !size_changed {
+            return;
+        }
+
+        // Cache the current values for next frame comparison
+        self.last_bounds = Some(*bounds);
+        self.last_physical_size = Some(physical_size);
+
+        // Mark that we need to re-render the cached texture
+        self.needs_redraw = true;
+
         // Calculate scale factor from physical vs logical size
         let scale_x = physical_size.width as f32 / bounds.width;
         let scale_y = physical_size.height as f32 / bounds.height;
@@ -374,50 +522,188 @@ impl GridPipeline {
         self.update_with_bounds(queue, bounds);
     }
 
-    // Render the grid to the screen
+    // Create or recreate the cached texture when size changes
+    fn ensure_cached_texture(&mut self, device: &Device, physical_size: nih_plug_iced::Size<u32>) {
+        // Check if we need to create a new texture (size changed or doesn't exist)
+        let needs_new_texture = self.cached_texture.as_ref().map_or(true, |texture| {
+            texture.width() != physical_size.width || texture.height() != physical_size.height
+        });
+
+        if needs_new_texture {
+            // Create a new cached texture with the current size
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("Grid Cached Texture"),
+                size: wgpu::Extent3d {
+                    width: physical_size.width,
+                    height: physical_size.height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: self.texture_format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+            // Store texture and view first
+            self.cached_texture = Some(texture);
+            self.cached_texture_view = Some(view);
+
+            // Create new blit bind group using the stored view
+            let blit_bind_group = device.create_bind_group(&BindGroupDescriptor {
+                label: Some("Grid Blit Bind Group"),
+                layout: &self.blit_bind_group_layout,
+                entries: &[
+                    BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(self.cached_texture_view.as_ref().unwrap()),
+                    },
+                    BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&self.blit_sampler),
+                    },
+                ],
+            });
+
+            self.blit_bind_group = Some(blit_bind_group);
+            self.needs_redraw = true; // Force redraw with new texture
+        }
+    }
+
+    // Public method to be called from prepare() - ensures cache is ready
+    pub fn prepare_cache(
+        &mut self,
+        device: &Device,
+        queue: &Queue,
+        physical_size: nih_plug_iced::Size<u32>,
+    ) {
+        self.render_to_cache(device, queue, physical_size);
+    }
+
+    // Render the grid to the cached texture (only when needed)
+    fn render_to_cache(
+        &mut self,
+        device: &Device,
+        queue: &Queue,
+        physical_size: nih_plug_iced::Size<u32>,
+    ) {
+        // Ensure cached texture exists and has the right size
+        self.ensure_cached_texture(device, physical_size);
+
+        // Only render if we need to
+        if !self.needs_redraw {
+            return;
+        }
+
+        // Get the cached texture view (we just ensured it exists)
+        let texture_view = self.cached_texture_view.as_ref().unwrap();
+
+        // Create a command encoder for this render operation
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("Grid Cache Render Encoder"),
+        });
+
+        // Render the grid to the cached texture
+        {
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Grid Cache Render Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: texture_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+
+            // Set scissor to full texture size
+            render_pass.set_scissor_rect(0, 0, physical_size.width, physical_size.height);
+            render_pass.set_pipeline(&self.render_pipeline);
+            render_pass.set_bind_group(0, &self.bind_group, &[]);
+            render_pass.draw(0..3, 0..1);
+        }
+
+        // Submit the render commands
+        queue.submit(Some(encoder.finish()));
+
+        // Mark that we've completed the redraw
+        self.needs_redraw = false;
+    }
+
+    // Render the grid to the screen by blitting the cached texture
     pub fn render(
         &self,
         encoder: &mut wgpu::CommandEncoder,  // Records GPU commands
         target: &wgpu::TextureView,  // The texture we're rendering to (usually the screen)
         clip_bounds: Rectangle<u32>,  // Scissor rectangle for clipping
     ) {
-        // Begin a render pass - this is where actual drawing happens
-        // A render pass is a sequence of draw commands that write to the same set of attachments
-        let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("Grid Render Pass"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: target,  // Where to draw
-                resolve_target: None,  // No multisampling resolve
-                ops: wgpu::Operations {
-                    // Load existing content (don't clear) - allows layering
-                    load: wgpu::LoadOp::Load,
-                    // Store the result
-                    store: wgpu::StoreOp::Store,
-                },
-                depth_slice: None,
-            })],
-            depth_stencil_attachment: None,  // No depth buffer
-            timestamp_writes: None,  // No timing queries
-            occlusion_query_set: None,  // No occlusion queries
-        });
+        // If we have a cached texture, blit it to the target
+        // Otherwise, fall back to direct rendering (shouldn't happen in normal operation)
+        if let Some(blit_bind_group) = &self.blit_bind_group {
+            // Blit the cached grid texture to the screen
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Grid Blit Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load, // Preserve existing content
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
 
-        // Set scissor rectangle to clip rendering to bounds
-        // This prevents drawing outside the widget area
-        render_pass.set_scissor_rect(
-            clip_bounds.x,
-            clip_bounds.y,
-            clip_bounds.width,
-            clip_bounds.height,
-        );
+            render_pass.set_scissor_rect(
+                clip_bounds.x,
+                clip_bounds.y,
+                clip_bounds.width,
+                clip_bounds.height,
+            );
 
-        // Configure the pipeline for this draw call
-        render_pass.set_pipeline(&self.render_pipeline);
+            // Use blit pipeline to sample from cached texture
+            render_pass.set_pipeline(&self.blit_pipeline);
+            render_pass.set_bind_group(0, blit_bind_group, &[]);
+            render_pass.draw(0..3, 0..1);
+        } else {
+            // Fallback: render directly (shouldn't happen after prepare_cache is called)
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Grid Render Pass (Fallback)"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
 
-        // Bind our resources (uniforms) to the pipeline
-        render_pass.set_bind_group(0, &self.bind_group, &[]);
+            render_pass.set_scissor_rect(
+                clip_bounds.x,
+                clip_bounds.y,
+                clip_bounds.width,
+                clip_bounds.height,
+            );
 
-        // Draw 3 vertices (forms 1 triangle that covers entire screen)
-        // Instance count is 1 (draw once)
-        render_pass.draw(0..3, 0..1);
+            render_pass.set_pipeline(&self.render_pipeline);
+            render_pass.set_bind_group(0, &self.bind_group, &[]);
+            render_pass.draw(0..3, 0..1);
+        }
     }
 }

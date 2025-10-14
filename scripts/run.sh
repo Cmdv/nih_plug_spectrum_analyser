@@ -23,7 +23,7 @@ else
 fi
 
 echo "🔨 Building plugin..."
-cargo xtask bundle $PLUGIN_NAME --release
+RUST_LOG=wgpu_core=debug,wgpu_hal=debug cargo xtask bundle $PLUGIN_NAME --release
 
 echo "✅ Build completed!"
 
@@ -51,8 +51,8 @@ tmux split-window -h -t $SESSION_NAME:main
 # Left pane: Monitor logs
 tmux send-keys -t $SESSION_NAME:main.0 'while [ ! -f '$LOG_FILE' ]; do sleep 1; done && tail -f '$LOG_FILE Enter
 
-# Right pane: Start Bitwig
-tmux send-keys -t $SESSION_NAME:main.1 'NIH_LOG='$LOG_FILE' "/Applications/Bitwig Studio.app/Contents/MacOS/BitwigStudio"' Enter
+# Right pane: Start Bitwig with wgpu debug logging and Metal HUD overlay
+tmux send-keys -t $SESSION_NAME:main.1 'MTL_HUD_ENABLED=1 RUST_LOG=wgpu_core=debug,wgpu_hal=debug NIH_LOG='$LOG_FILE' "/Applications/Bitwig Studio.app/Contents/MacOS/BitwigStudio"' Enter
 
 
 # Focus on left pane (Bitwig)

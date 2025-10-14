@@ -105,6 +105,18 @@ impl SpectrumSpeed {
             Self::VeryFast => 100.0,
         }
     }
+
+    /// Convert to animation speed multiplier for fluid shader
+    /// Medium = 1.0x (baseline), faster speeds = higher multipliers
+    pub fn to_animation_speed_multiplier(&self) -> f32 {
+        match self {
+            Self::VerySlow => 0.25,
+            Self::Slow => 0.5,
+            Self::Medium => 1.0,
+            Self::Fast => 2.0,
+            Self::VeryFast => 4.0,
+        }
+    }
 }
 
 /// Continuously computes frequency spectrum and sends to [`SpectrumConsumer`] (audio thread writes to this)

@@ -23,7 +23,7 @@ else
 fi
 
 echo "🔨 Building plugin..."
-cargo xtask bundle $PLUGIN_NAME --release
+RUST_LOG=wgpu_core=debug,wgpu_hal=debug cargo xtask bundle $PLUGIN_NAME --release
 
 echo "✅ Build completed!"
 
