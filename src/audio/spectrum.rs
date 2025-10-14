@@ -64,13 +64,6 @@ impl SpectrumConsumer {
                 resource: "spectrum output".to_string(),
             })
     }
-
-    /// Read latest spectrum data with fallback to silence
-    /// Convenience method for when you want to always get data
-    #[must_use]
-    pub fn read_or_silence(&self) -> SpectrumData {
-        self.read().unwrap_or_else(|_| vec![SPECTRUM_FLOOR_DB; 256]) // Default fallback size
-    }
 }
 
 /// Spectrum analyser speed presets for temporal envelope (attack/release)

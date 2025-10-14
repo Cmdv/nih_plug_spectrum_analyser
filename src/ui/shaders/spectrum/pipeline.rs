@@ -219,16 +219,11 @@ pub struct SpectrumPipeline {
     uniform_buffer: wgpu::Buffer,
 
     // Storage buffer for spectrum metadata (bin count)
-    #[allow(dead_code)]
     spectrum_metadata_buffer: wgpu::Buffer,
 
     // Storage buffer for spectrum bin values (dB magnitudes)
     // This is dynamically sized based on the number of bins
     spectrum_bins_buffer: wgpu::Buffer,
-
-    // OPTIMIZATION: Storage buffer for precomputed particle positions
-    // Computed once per frame by compute shader, read by fragment shader
-    particle_positions_buffer: wgpu::Buffer,
 
     // Bind group links our buffers/textures to shader variables
     // It's like connecting wires between CPU data and GPU shader inputs
@@ -520,7 +515,6 @@ impl SpectrumPipeline {
             uniform_buffer,
             spectrum_metadata_buffer,
             spectrum_bins_buffer,
-            particle_positions_buffer,
             bind_group,
             compute_bind_group,
             current_bin_capacity: initial_capacity,

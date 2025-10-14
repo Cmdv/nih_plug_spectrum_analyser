@@ -136,7 +136,7 @@ impl Default for SAPlugin {
     fn default() -> Self {
         let sample_rate = Arc::new(AtomicF32::new(44100.0));
 
-        // Configure the spectrum analyzer
+        // Configure the spectrum analyser
         let (audio_spectrum_producer, ui_spectrum_consumer) = SpectrumProducer::new();
 
         let (audio_meter_producer, ui_meter_consumer) = create_meter_channels();
