@@ -75,8 +75,8 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         return vec4<f32>(0.0, 0.0, 0.0, 0.0);
     }
 
-    // Single base color with opacity for darkness
-    let base_color = vec3<f32>(0.1, 0.1, 0.1);  // Darker gray base color
+    // Brighter grid lines that are visible on dark backgrounds
+    let base_color = vec3<f32>(0.2, 0.2, 0.225);  // 2x brighter gray with slight blue tint
 
     var final_alpha = 0.0;
     var is_major_line = false;
@@ -92,7 +92,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         let line_contrib = select(0.0, 1.0, floor(pixel_coord.y) == floor(line_y));
         if line_contrib > 0.0 {
             // dB lines are major lines with higher opacity
-            final_alpha = max(final_alpha, line_contrib * 0.25);
+            final_alpha = max(final_alpha, line_contrib * 0.5);  // Increased from 0.25
             is_major_line = true;
         }
     }
@@ -114,7 +114,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
             let is_major = is_major_flag >= 0.9;
 
             // Select opacity based on major/minor status
-            let alpha = select(0.1, 0.6, is_major);  // Major lines now 6× brighter
+            let alpha = select(0.25, 0.7, is_major);  // Increased: minor 0.25, major 0.7
             let contrib_alpha = line_contrib * alpha;
 
             // Take maximum alpha to handle intersections correctly

@@ -77,7 +77,7 @@ impl Primitive for GridPrimitive {
     fn prepare(
         &self,
         renderer: &mut Self::Renderer,
-        _device: &wgpu::Device,
+        device: &wgpu::Device,
         queue: &wgpu::Queue,
         _bounds: &Rectangle,
         viewport: &nih_plug_iced::graphics::Viewport,
@@ -88,8 +88,12 @@ impl Primitive for GridPrimitive {
         let physical_size = viewport.physical_size();
 
         // Update uniforms with physical dimensions
-        // This uploads the new data to the GPU
+        // This uploads the new data to the GPU only if size changed
         renderer.update_with_physical_size(queue, &self.bounds, physical_size);
+
+        // Prepare the cached texture - only re-renders if size changed
+        // This is the key optimization: expensive grid rendering only happens on resize
+        renderer.prepare_cache(device, queue, physical_size);
     }
 
     // Called to execute the actual rendering

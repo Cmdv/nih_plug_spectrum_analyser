@@ -64,13 +64,6 @@ impl SpectrumConsumer {
                 resource: "spectrum output".to_string(),
             })
     }
-
-    /// Read latest spectrum data with fallback to silence
-    /// Convenience method for when you want to always get data
-    #[must_use]
-    pub fn read_or_silence(&self) -> SpectrumData {
-        self.read().unwrap_or_else(|_| vec![SPECTRUM_FLOOR_DB; 256]) // Default fallback size
-    }
 }
 
 /// Spectrum analyser speed presets for temporal envelope (attack/release)
@@ -103,6 +96,18 @@ impl SpectrumSpeed {
             Self::Medium => 500.0,
             Self::Fast => 250.0,
             Self::VeryFast => 100.0,
+        }
+    }
+
+    /// Convert to animation speed multiplier for fluid shader
+    /// Medium = 1.0x (baseline), faster speeds = higher multipliers
+    pub fn to_animation_speed_multiplier(&self) -> f32 {
+        match self {
+            Self::VerySlow => 0.25,
+            Self::Slow => 0.5,
+            Self::Medium => 1.0,
+            Self::Fast => 2.0,
+            Self::VeryFast => 4.0,
         }
     }
 }

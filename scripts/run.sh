@@ -1,9 +1,24 @@
 #!/bin/bash
 
-# Build and Install Plugin Script
-# This script builds the plugin, removes old version, and installs the new one
+# Build and Install Plugin Script with Development Session
+# This script builds the plugin, removes old version, installs it, and starts tmux session
+# Usage: ./run.sh [--debug]
+#   --debug: Enable WGPU debug logging
 
 set -e  # Exit on any error
+
+# Parse command-line arguments
+DEBUG_MODE=false
+for arg in "$@"; do
+    case $arg in
+        --debug)
+            DEBUG_MODE=true
+            shift
+            ;;
+        *)
+            ;;
+    esac
+done
 
 # Prompt for sudo password upfront and keep alive
 echo "🔐 This script needs sudo access to install the plugin..."
@@ -23,7 +38,12 @@ else
 fi
 
 echo "🔨 Building plugin..."
-cargo xtask bundle $PLUGIN_NAME --release
+if [ "$DEBUG_MODE" = true ]; then
+    echo "🐛 Debug mode enabled - WGPU logging active"
+    RUST_LOG=wgpu_core=debug,wgpu_hal=debug cargo xtask bundle $PLUGIN_NAME --release
+else
+    cargo xtask bundle $PLUGIN_NAME --release
+fi
 
 echo "✅ Build completed!"
 
@@ -51,8 +71,12 @@ tmux split-window -h -t $SESSION_NAME:main
 # Left pane: Monitor logs
 tmux send-keys -t $SESSION_NAME:main.0 'while [ ! -f '$LOG_FILE' ]; do sleep 1; done && tail -f '$LOG_FILE Enter
 
-# Right pane: Start Bitwig
-tmux send-keys -t $SESSION_NAME:main.1 'NIH_LOG='$LOG_FILE' "/Applications/Bitwig Studio.app/Contents/MacOS/BitwigStudio"' Enter
+# Right pane: Start Bitwig (with optional debug logging)
+if [ "$DEBUG_MODE" = true ]; then
+    tmux send-keys -t $SESSION_NAME:main.1 'MTL_HUD_ENABLED=1 RUST_LOG=wgpu_core=debug,wgpu_hal=debug NIH_LOG='$LOG_FILE' "/Applications/Bitwig Studio.app/Contents/MacOS/BitwigStudio"' Enter
+else
+    tmux send-keys -t $SESSION_NAME:main.1 'NIH_LOG='$LOG_FILE' "/Applications/Bitwig Studio.app/Contents/MacOS/BitwigStudio"' Enter
+fi
 
 
 # Focus on left pane (Bitwig)
