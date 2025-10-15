@@ -473,6 +473,34 @@ impl SpectrumPipeline {
                     },
                     count: None,
                 },
+                // Binding 2: Spectrum metadata storage buffer (read-only for compute)
+                // EDGE-AWARE OPTIMIZATION: Allows particles to read spectrum boundary
+                BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: ShaderStages::COMPUTE,
+                    ty: BindingType::Buffer {
+                        ty: BufferBindingType::Storage {
+                            read_only: true, // Compute shader reads spectrum metadata
+                        },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                // Binding 3: Spectrum bins storage buffer (read-only for compute)
+                // EDGE-AWARE OPTIMIZATION: Allows particles to constrain to spectrum line
+                BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: ShaderStages::COMPUTE,
+                    ty: BindingType::Buffer {
+                        ty: BufferBindingType::Storage {
+                            read_only: true, // Compute shader reads spectrum bins for boundary constraint
+                        },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
 
@@ -494,6 +522,7 @@ impl SpectrumPipeline {
         });
 
         // Create compute bind group
+        // EDGE-AWARE: Now includes spectrum bins and metadata for boundary constraints
         let compute_bind_group = device.create_bind_group(&BindGroupDescriptor {
             label: Some("Particle Compute Bind Group"),
             layout: &compute_bind_group_layout,
@@ -503,8 +532,16 @@ impl SpectrumPipeline {
                     resource: uniform_buffer.as_entire_binding(),
                 },
                 BindGroupEntry {
-                    binding: 1, // Particle positions buffer
+                    binding: 1, // Particle positions buffer (read_write)
                     resource: particle_positions_buffer.as_entire_binding(),
+                },
+                BindGroupEntry {
+                    binding: 2, // Spectrum metadata buffer (read-only)
+                    resource: spectrum_metadata_buffer.as_entire_binding(),
+                },
+                BindGroupEntry {
+                    binding: 3, // Spectrum bins buffer (read-only)
+                    resource: spectrum_bins_buffer.as_entire_binding(),
                 },
             ],
         });

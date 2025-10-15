@@ -161,7 +161,7 @@ fn get_spectrum_y_at_x(x: f32) -> f32 {
 
 
 // Fragment shader: Runs once for every pixel
-// Renders both spectrum line and fluid fill in a single pass
+// Renders Voronoi fluid constrained below the spectrum boundary
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     // Convert UV (0-1) to widget-local pixel coordinates
@@ -176,31 +176,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         return vec4<f32>(0.0, 0.0, 0.0, 0.0);  // Transparent
     }
 
-    // STEP 1: Calculate distance to spectrum line
-    // OPTIMIZATION: Only check nearby line segments instead of all segments
-    var min_dist = 999999.0;
-    let norm_x = pixel_coord.x / spectrum_width;
-    let bin_position = norm_x * f32(metadata.bin_count - 1u);
-    let center_bin = u32(floor(bin_position));
-
-    let check_start = max(0u, center_bin - 1u);
-    let check_end = min(metadata.bin_count - 1u, center_bin + 2u);
-
-    for (var i = check_start; i < check_end; i++) {
-        let p1 = calculate_spectrum_point_position(i);
-        let p2 = calculate_spectrum_point_position(i + 1u);
-        let dist = distance_to_line_segment(pixel_coord, p1, p2);
-        min_dist = min(min_dist, dist);
-    }
-
-    // STEP 2: Draw spectrum line (highest priority - always on top)
-    let line_width = 0.5;
-    if min_dist <= line_width {
-        let line_color = vec3<f32>(0.3, 1.0, 0.8);  // Cyan
-        return vec4<f32>(line_color, 1.0);
-    }
-
-    // STEP 3: Check if below spectrum line -> draw fluid fill
+    // Check if below spectrum line -> draw fluid fill
     let spectrum_y = get_spectrum_y_at_x(pixel_coord.x);
     if pixel_coord.y < spectrum_y {
         // Above spectrum line - transparent
