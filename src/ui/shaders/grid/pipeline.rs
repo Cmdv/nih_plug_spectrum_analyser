@@ -1,11 +1,12 @@
+use crate::audio::constants;
 use bytemuck::{Pod, Zeroable};
-use nih_plug_iced::Rectangle;
 use nih_plug_iced::renderer::wgpu::wgpu::{
     self as wgpu, BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayoutDescriptor,
     BindGroupLayoutEntry, BindingType, BufferBindingType, BufferUsages, Device, Queue,
     RenderPipeline, ShaderStages, TextureFormat,
 };
-use crate::audio::constants;
+use nih_plug_iced::renderer::wgpu::primitive::Pipeline;
+use nih_plug_iced::Rectangle;
 
 // Uniforms are data passed from CPU to GPU that remain constant during a draw call
 // They're used for things like screen resolution, time, user settings, etc.
@@ -42,11 +43,11 @@ impl Uniforms {
     pub fn new(bounds: &Rectangle) -> Self {
         Self {
             resolution: [bounds.width, bounds.height],
-            line_width: 0.8,         // Line anti-aliasing width (smoothstep falloff distance)
-            spectrum_margin_right: 30.0,  // Right margin for frequency labels
+            line_width: 0.8, // Line anti-aliasing width (smoothstep falloff distance)
+            spectrum_margin_right: 30.0, // Right margin for frequency labels
             spectrum_margin_bottom: 30.0, // Bottom margin for amplitude labels
-            grid_inset_right: 20.0,  // Stop grid 20px before right edge for label space
-            _padding: [0.0, 0.0],    // Alignment padding
+            grid_inset_right: 20.0, // Stop grid 20px before right edge for label space
+            _padding: [0.0, 0.0], // Alignment padding
         }
     }
 }
@@ -160,7 +161,7 @@ impl GridPipeline {
         // The shader is embedded in the binary using include_str!
         // This happens at compile time, so the shader becomes part of the executable
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Grid Shader"),  // Labels help with debugging
+            label: Some("Grid Shader"), // Labels help with debugging
             source: wgpu::ShaderSource::Wgsl(include_str!("grid.wgsl").into()),
         });
 
@@ -171,22 +172,22 @@ impl GridPipeline {
             entries: &[
                 // Binding 0: Uniform buffer for basic parameters
                 BindGroupLayoutEntry {
-                    binding: 0,  // Matches @binding(0) in shader
-                    visibility: ShaderStages::FRAGMENT,  // Only fragment shader needs this
+                    binding: 0,                         // Matches @binding(0) in shader
+                    visibility: ShaderStages::FRAGMENT, // Only fragment shader needs this
                     ty: BindingType::Buffer {
-                        ty: BufferBindingType::Uniform,  // It's a uniform buffer (read-only in shader)
-                        has_dynamic_offset: false,  // The buffer location doesn't change
-                        min_binding_size: None,  // No minimum size requirement
+                        ty: BufferBindingType::Uniform, // It's a uniform buffer (read-only in shader)
+                        has_dynamic_offset: false,      // The buffer location doesn't change
+                        min_binding_size: None,         // No minimum size requirement
                     },
-                    count: None,  // Not an array of buffers
+                    count: None, // Not an array of buffers
                 },
                 // Binding 1: Storage buffer for grid metadata
                 BindGroupLayoutEntry {
-                    binding: 1,  // Matches @binding(1) in shader
-                    visibility: ShaderStages::FRAGMENT,  // Only fragment shader needs this
+                    binding: 1,                         // Matches @binding(1) in shader
+                    visibility: ShaderStages::FRAGMENT, // Only fragment shader needs this
                     ty: BindingType::Buffer {
                         ty: BufferBindingType::Storage {
-                            read_only: true  // Read-only storage buffer
+                            read_only: true, // Read-only storage buffer
                         },
                         has_dynamic_offset: false,
                         min_binding_size: None,
@@ -195,11 +196,11 @@ impl GridPipeline {
                 },
                 // Binding 2: Storage buffer for line positions (dynamic array)
                 BindGroupLayoutEntry {
-                    binding: 2,  // Matches @binding(2) in shader
-                    visibility: ShaderStages::FRAGMENT,  // Only fragment shader needs this
+                    binding: 2,                         // Matches @binding(2) in shader
+                    visibility: ShaderStages::FRAGMENT, // Only fragment shader needs this
                     ty: BindingType::Buffer {
                         ty: BufferBindingType::Storage {
-                            read_only: true  // Read-only storage buffer
+                            read_only: true, // Read-only storage buffer
                         },
                         has_dynamic_offset: false,
                         min_binding_size: None,
@@ -213,8 +214,8 @@ impl GridPipeline {
         // This defines the overall structure of resources for the entire pipeline
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Grid Pipeline Layout"),
-            bind_group_layouts: &[&bind_group_layout],  // Can have multiple bind groups
-            push_constant_ranges: &[],  // Push constants are another way to pass small data
+            bind_group_layouts: &[&bind_group_layout], // Can have multiple bind groups
+            push_constant_ranges: &[], // Push constants are another way to pass small data
         });
 
         // Step 4: Create the render pipeline
@@ -227,21 +228,21 @@ impl GridPipeline {
             // Vertex shader configuration
             vertex: wgpu::VertexState {
                 module: &shader,
-                entry_point: Some("vs_main"),  // Function name in WGSL
-                buffers: &[],  // No vertex buffers - we generate vertices in shader
+                entry_point: Some("vs_main"), // Function name in WGSL
+                buffers: &[],                 // No vertex buffers - we generate vertices in shader
                 compilation_options: Default::default(),
             },
 
             // Fragment shader configuration
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
-                entry_point: Some("fs_main"),  // Function name in WGSL
+                entry_point: Some("fs_main"), // Function name in WGSL
                 targets: &[Some(wgpu::ColorTargetState {
-                    format,  // Output format (matches screen/window format)
+                    format, // Output format (matches screen/window format)
                     // Alpha blending allows transparency
                     // This lets our grid overlay on top of other content
                     blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,  // Write all color channels
+                    write_mask: wgpu::ColorWrites::ALL, // Write all color channels
                 })],
                 compilation_options: Default::default(),
             }),
@@ -252,10 +253,10 @@ impl GridPipeline {
                 // For 3 vertices: creates 1 fullscreen triangle
                 topology: wgpu::PrimitiveTopology::TriangleStrip,
                 strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw,  // Counter-clockwise winding
-                cull_mode: None,  // Don't cull any faces
+                front_face: wgpu::FrontFace::Ccw, // Counter-clockwise winding
+                cull_mode: None,                  // Don't cull any faces
                 unclipped_depth: false,
-                polygon_mode: wgpu::PolygonMode::Fill,  // Fill triangles, not wireframe
+                polygon_mode: wgpu::PolygonMode::Fill, // Fill triangles, not wireframe
                 conservative: false,
             },
 
@@ -264,11 +265,11 @@ impl GridPipeline {
 
             // Anti-aliasing settings
             multisample: wgpu::MultisampleState {
-                count: 1,  // No multisampling
+                count: 1, // No multisampling
                 mask: !0,
                 alpha_to_coverage_enabled: false,
             },
-            multiview: None,  // Not using multiview rendering
+            multiview: None, // Not using multiview rendering
         });
 
         // Step 5: Create blit shader and pipeline for copying cached texture to screen
@@ -367,9 +368,9 @@ impl GridPipeline {
         // Uniform buffer for basic parameters
         let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Grid Uniform Buffer"),
-            size: std::mem::size_of::<Uniforms>() as u64,  // Size in bytes
-            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,  // Can be updated from CPU
-            mapped_at_creation: false,  // Don't map to CPU memory immediately
+            size: std::mem::size_of::<Uniforms>() as u64, // Size in bytes
+            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST, // Can be updated from CPU
+            mapped_at_creation: false,                    // Don't map to CPU memory immediately
         });
 
         // Storage buffer for grid metadata
@@ -377,7 +378,7 @@ impl GridPipeline {
             label: Some("Grid Metadata Buffer"),
             size: std::mem::size_of::<GridMetadata>() as u64,
             usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
-            mapped_at_creation: true,  // Map immediately to write data
+            mapped_at_creation: true, // Map immediately to write data
         });
 
         // Write metadata to buffer
@@ -392,7 +393,7 @@ impl GridPipeline {
             label: Some("Grid Line Positions Buffer"),
             size: (positions.len() * std::mem::size_of::<f32>()) as u64,
             usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
-            mapped_at_creation: true,  // Map immediately to write data
+            mapped_at_creation: true, // Map immediately to write data
         });
 
         // Write positions to buffer
@@ -410,15 +411,15 @@ impl GridPipeline {
             layout: &bind_group_layout,
             entries: &[
                 BindGroupEntry {
-                    binding: 0,  // Uniform buffer
+                    binding: 0, // Uniform buffer
                     resource: uniform_buffer.as_entire_binding(),
                 },
                 BindGroupEntry {
-                    binding: 1,  // Grid metadata storage buffer
+                    binding: 1, // Grid metadata storage buffer
                     resource: grid_metadata_buffer.as_entire_binding(),
                 },
                 BindGroupEntry {
-                    binding: 2,  // Line positions storage buffer
+                    binding: 2, // Line positions storage buffer
                     resource: line_positions_buffer.as_entire_binding(),
                 },
             ],
@@ -471,15 +472,14 @@ impl GridPipeline {
         // Check if anything has changed - if not, skip the GPU buffer update
         // This optimization prevents unnecessary buffer writes when the grid is static
         let bounds_changed = self.last_bounds.map_or(true, |last| {
-            last.x != bounds.x ||
-            last.y != bounds.y ||
-            last.width != bounds.width ||
-            last.height != bounds.height
+            last.x != bounds.x
+                || last.y != bounds.y
+                || last.width != bounds.width
+                || last.height != bounds.height
         });
 
         let size_changed = self.last_physical_size.map_or(true, |last| {
-            last.width != physical_size.width ||
-            last.height != physical_size.height
+            last.width != physical_size.width || last.height != physical_size.height
         });
 
         // Skip update if nothing changed - this is the key optimization
@@ -518,7 +518,13 @@ impl GridPipeline {
     // Alternative update method that accepts line counts (currently unused)
     // Line counts are determined by constants in build_grid_data()
     #[allow(dead_code)]
-    pub fn update_with_lines(&mut self, queue: &Queue, bounds: &Rectangle, _h_lines: u32, _v_lines: u32) {
+    pub fn update_with_lines(
+        &mut self,
+        queue: &Queue,
+        bounds: &Rectangle,
+        _h_lines: u32,
+        _v_lines: u32,
+    ) {
         self.update_with_bounds(queue, bounds);
     }
 
@@ -542,7 +548,8 @@ impl GridPipeline {
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
                 format: self.texture_format,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
                 view_formats: &[],
             });
 
@@ -559,7 +566,9 @@ impl GridPipeline {
                 entries: &[
                     BindGroupEntry {
                         binding: 0,
-                        resource: wgpu::BindingResource::TextureView(self.cached_texture_view.as_ref().unwrap()),
+                        resource: wgpu::BindingResource::TextureView(
+                            self.cached_texture_view.as_ref().unwrap(),
+                        ),
                     },
                     BindGroupEntry {
                         binding: 1,
@@ -641,9 +650,9 @@ impl GridPipeline {
     // Render the grid to the screen by blitting the cached texture
     pub fn render(
         &self,
-        encoder: &mut wgpu::CommandEncoder,  // Records GPU commands
-        target: &wgpu::TextureView,  // The texture we're rendering to (usually the screen)
-        clip_bounds: Rectangle<u32>,  // Scissor rectangle for clipping
+        encoder: &mut wgpu::CommandEncoder, // Records GPU commands
+        target: &wgpu::TextureView,         // The texture we're rendering to (usually the screen)
+        clip_bounds: Rectangle<u32>,        // Scissor rectangle for clipping
     ) {
         // If we have a cached texture, blit it to the target
         // Otherwise, fall back to direct rendering (shouldn't happen in normal operation)
@@ -705,5 +714,11 @@ impl GridPipeline {
             render_pass.set_bind_group(0, &self.bind_group, &[]);
             render_pass.draw(0..3, 0..1);
         }
+    }
+}
+
+impl Pipeline for GridPipeline {
+    fn new(device: &Device, _queue: &Queue, format: TextureFormat) -> Self {
+        GridPipeline::new(device, format)
     }
 }

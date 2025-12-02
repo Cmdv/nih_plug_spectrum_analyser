@@ -2,9 +2,9 @@ pub mod pipeline;
 
 use pipeline::GridPipeline;
 
-use nih_plug_iced::{mouse, Rectangle};
-use nih_plug_iced::widget::shader::{self, Primitive};
 use nih_plug_iced::renderer::wgpu::wgpu;
+use nih_plug_iced::widget::shader::{self, Primitive};
+use nih_plug_iced::{mouse, Rectangle};
 
 // GridShader implements the Program trait, which is iced's interface for custom shaders
 // It acts as the bridge between iced's widget system and our WGPU rendering code
@@ -31,9 +31,9 @@ impl<Message> shader::Program<Message> for GridShader {
     // This is where we pass current data to the GPU
     fn draw(
         &self,
-        _state: &Self::State,    // Persistent state (unused here)
-        _cursor: mouse::Cursor,   // Mouse position (unused here)
-        bounds: Rectangle,        // Widget bounds in screen space
+        _state: &Self::State,   // Persistent state (unused here)
+        _cursor: mouse::Cursor, // Mouse position (unused here)
+        bounds: Rectangle,      // Widget bounds in screen space
     ) -> Self::Primitive {
         GridPrimitive::new(bounds)
     }
@@ -51,32 +51,16 @@ pub struct GridPrimitive {
 
 impl GridPrimitive {
     pub fn new(bounds: Rectangle) -> Self {
-        Self {
-            bounds,
-        }
+        Self { bounds }
     }
 }
 
-// The Primitive trait defines how our custom GPU primitive works
-// Based on the iced 0.14 API, it uses Renderer associated type with initialize/prepare/render
 impl Primitive for GridPrimitive {
-    // The renderer type that persists between frames
-    type Renderer = GridPipeline;
+    type Pipeline = GridPipeline;
 
-    // Called once to initialize the renderer
-    fn initialize(
-        &self,
-        device: &wgpu::Device,
-        _queue: &wgpu::Queue,
-        format: wgpu::TextureFormat,
-    ) -> Self::Renderer {
-        GridPipeline::new(device, format)
-    }
-
-    // Called before rendering to prepare GPU resources
     fn prepare(
         &self,
-        renderer: &mut Self::Renderer,
+        pipeline: &mut Self::Pipeline,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         _bounds: &Rectangle,
@@ -87,25 +71,18 @@ impl Primitive for GridPrimitive {
         // not the logical size which would be scaled/zoomed
         let physical_size = viewport.physical_size();
 
-        // Update uniforms with physical dimensions
-        // This uploads the new data to the GPU only if size changed
-        renderer.update_with_physical_size(queue, &self.bounds, physical_size);
-
-        // Prepare the cached texture - only re-renders if size changed
-        // This is the key optimization: expensive grid rendering only happens on resize
-        renderer.prepare_cache(device, queue, physical_size);
+        pipeline.update_with_physical_size(queue, &self.bounds, physical_size);
+        pipeline.prepare_cache(device, queue, physical_size);
     }
 
-    // Called to execute the actual rendering
     fn render(
         &self,
-        renderer: &Self::Renderer,
+        pipeline: &Self::Pipeline,
         encoder: &mut wgpu::CommandEncoder,
         target: &wgpu::TextureView,
         clip_bounds: &Rectangle<u32>,
     ) {
-        // Execute the render commands
-        renderer.render(encoder, target, *clip_bounds);
+        pipeline.render(encoder, target, *clip_bounds);
     }
 }
 
