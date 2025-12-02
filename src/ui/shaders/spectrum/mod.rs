@@ -66,7 +66,9 @@ impl<Message> shader::Program<Message> for SpectrumShader {
         bounds: Rectangle,      // Widget bounds in screen space
     ) -> Self::Primitive {
         // Lock and read spectrum data
-        let raw_fft_bins = self.spectrum_data.lock()
+        let raw_fft_bins = self
+            .spectrum_data
+            .lock()
             .map(|guard| guard.clone())
             .unwrap_or_default();
 
@@ -77,7 +79,11 @@ impl<Message> shader::Program<Message> for SpectrumShader {
         let (min_db, max_db) = self.plugin_params.range.value().to_db_range();
 
         // Read animation speed and convert to multiplier
-        let animation_speed = self.plugin_params.speed.value().to_animation_speed_multiplier();
+        let animation_speed = self
+            .plugin_params
+            .speed
+            .value()
+            .to_animation_speed_multiplier();
 
         // Transform raw FFT bins to logarithmically-sampled display data
         // This ensures correct frequency scaling for musical perception
@@ -102,7 +108,13 @@ pub struct SpectrumPrimitive {
 }
 
 impl SpectrumPrimitive {
-    pub fn new(bounds: Rectangle, spectrum_data: Vec<f32>, min_db: f32, max_db: f32, animation_speed: f32) -> Self {
+    pub fn new(
+        bounds: Rectangle,
+        spectrum_data: Vec<f32>,
+        min_db: f32,
+        max_db: f32,
+        animation_speed: f32,
+    ) -> Self {
         Self {
             bounds,
             spectrum_data,
@@ -116,26 +128,11 @@ impl SpectrumPrimitive {
 // The Primitive trait defines how our custom GPU primitive works
 // Based on the iced 0.14 API, it uses Renderer associated type with initialize/prepare/render
 impl Primitive for SpectrumPrimitive {
-    // The renderer type that persists between frames
-    // This holds all the GPU resources (buffers, pipelines, etc.)
-    type Renderer = SpectrumPipeline;
+    type Pipeline = SpectrumPipeline;
 
-    // Called once to initialize the renderer
-    // This is where we create the GPU pipeline, buffers, and bind groups
-    fn initialize(
-        &self,
-        device: &wgpu::Device,
-        _queue: &wgpu::Queue,
-        format: wgpu::TextureFormat,
-    ) -> Self::Renderer {
-        SpectrumPipeline::new(device, format)
-    }
-
-    // Called before rendering to prepare GPU resources
-    // This uploads fresh spectrum data to the GPU each frame
     fn prepare(
         &self,
-        renderer: &mut Self::Renderer,
+        pipeline: &mut Self::Pipeline,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         _bounds: &Rectangle,
@@ -146,9 +143,7 @@ impl Primitive for SpectrumPrimitive {
         // not the logical size which would be scaled/zoomed
         let physical_size = viewport.physical_size();
 
-        // Update uniforms and spectrum data with physical dimensions
-        // Pass device for lazy Voronoi initialization, dB range, and animation speed from user parameters
-        renderer.update_with_physical_size(
+        pipeline.update_with_physical_size(
             device,
             queue,
             &self.bounds,
@@ -160,16 +155,14 @@ impl Primitive for SpectrumPrimitive {
         );
     }
 
-    // Called to execute the actual rendering
-    // This encodes the render commands that draw the glowing spectrum
     fn render(
         &self,
-        renderer: &Self::Renderer,
+        pipeline: &Self::Pipeline,
         encoder: &mut wgpu::CommandEncoder,
         target: &wgpu::TextureView,
         clip_bounds: &Rectangle<u32>,
     ) {
         // Execute the render commands
-        renderer.render(encoder, target, *clip_bounds, &self.bounds);
+        pipeline.render(encoder, target, *clip_bounds, &self.bounds);
     }
 }

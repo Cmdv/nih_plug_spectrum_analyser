@@ -5,6 +5,7 @@ use nih_plug_iced::renderer::wgpu::wgpu::{
     BindGroupLayoutEntry, BindingType, BufferBindingType, BufferUsages, Device, Queue,
     RenderPipeline, ShaderStages, TextureFormat,
 };
+use nih_plug_iced::renderer::wgpu::primitive::Pipeline;
 use nih_plug_iced::Rectangle;
 
 /// Apply elastic easing to time for bouncy, spring-like animation
@@ -200,7 +201,6 @@ pub struct SpectrumMetadata {
     pub _padding1: u32,
     pub _padding2: u32,
 }
-
 
 // The Pipeline encapsulates all GPU state needed to render our spectrum
 // Think of it as a "recipe" for the GPU that defines:
@@ -446,80 +446,83 @@ impl SpectrumPipeline {
         });
 
         // Create compute bind group layout
-        let compute_bind_group_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
-            label: Some("Particle Compute Bind Group Layout"),
-            entries: &[
-                // Binding 0: Uniform buffer (same as render shaders)
-                BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: ShaderStages::COMPUTE,
-                    ty: BindingType::Buffer {
-                        ty: BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                // Binding 1: Particle positions storage buffer (read_write for compute)
-                BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: ShaderStages::COMPUTE,
-                    ty: BindingType::Buffer {
-                        ty: BufferBindingType::Storage {
-                            read_only: false, // Compute shader writes to this
+        let compute_bind_group_layout =
+            device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+                label: Some("Particle Compute Bind Group Layout"),
+                entries: &[
+                    // Binding 0: Uniform buffer (same as render shaders)
+                    BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: ShaderStages::COMPUTE,
+                        ty: BindingType::Buffer {
+                            ty: BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
                         },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
+                        count: None,
                     },
-                    count: None,
-                },
-                // Binding 2: Spectrum metadata storage buffer (read-only for compute)
-                // EDGE-AWARE OPTIMIZATION: Allows particles to read spectrum boundary
-                BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: ShaderStages::COMPUTE,
-                    ty: BindingType::Buffer {
-                        ty: BufferBindingType::Storage {
-                            read_only: true, // Compute shader reads spectrum metadata
+                    // Binding 1: Particle positions storage buffer (read_write for compute)
+                    BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: ShaderStages::COMPUTE,
+                        ty: BindingType::Buffer {
+                            ty: BufferBindingType::Storage {
+                                read_only: false, // Compute shader writes to this
+                            },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
                         },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
+                        count: None,
                     },
-                    count: None,
-                },
-                // Binding 3: Spectrum bins storage buffer (read-only for compute)
-                // EDGE-AWARE OPTIMIZATION: Allows particles to constrain to spectrum line
-                BindGroupLayoutEntry {
-                    binding: 3,
-                    visibility: ShaderStages::COMPUTE,
-                    ty: BindingType::Buffer {
-                        ty: BufferBindingType::Storage {
-                            read_only: true, // Compute shader reads spectrum bins for boundary constraint
+                    // Binding 2: Spectrum metadata storage buffer (read-only for compute)
+                    // EDGE-AWARE OPTIMIZATION: Allows particles to read spectrum boundary
+                    BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: ShaderStages::COMPUTE,
+                        ty: BindingType::Buffer {
+                            ty: BufferBindingType::Storage {
+                                read_only: true, // Compute shader reads spectrum metadata
+                            },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
                         },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
+                        count: None,
                     },
-                    count: None,
-                },
-            ],
-        });
+                    // Binding 3: Spectrum bins storage buffer (read-only for compute)
+                    // EDGE-AWARE OPTIMIZATION: Allows particles to constrain to spectrum line
+                    BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: ShaderStages::COMPUTE,
+                        ty: BindingType::Buffer {
+                            ty: BufferBindingType::Storage {
+                                read_only: true, // Compute shader reads spectrum bins for boundary constraint
+                            },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
+            });
 
         // Create compute pipeline layout
-        let compute_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Particle Compute Pipeline Layout"),
-            bind_group_layouts: &[&compute_bind_group_layout],
-            push_constant_ranges: &[],
-        });
+        let compute_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Particle Compute Pipeline Layout"),
+                bind_group_layouts: &[&compute_bind_group_layout],
+                push_constant_ranges: &[],
+            });
 
         // Create compute pipeline
-        let particle_compute_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("Particle Compute Pipeline"),
-            layout: Some(&compute_pipeline_layout),
-            module: &particle_compute_shader,
-            entry_point: Some("main"),
-            cache: None,
-            compilation_options: Default::default(),
-        });
+        let particle_compute_pipeline =
+            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("Particle Compute Pipeline"),
+                layout: Some(&compute_pipeline_layout),
+                module: &particle_compute_shader,
+                entry_point: Some("main"),
+                cache: None,
+                compilation_options: Default::default(),
+            });
 
         // Create compute bind group
         // EDGE-AWARE: Now includes spectrum bins and metadata for boundary constraints
@@ -592,8 +595,8 @@ impl SpectrumPipeline {
         const RISE_THRESHOLD: f32 = 0.08; // Minimum energy increase to detect attack (tune this for sensitivity)
 
         let energy_rise = current_midrange_energy - self.prev_midrange_energy;
-        let should_trigger_peak = energy_rise > RISE_THRESHOLD
-            && current_midrange_energy > PEAK_THRESHOLD;
+        let should_trigger_peak =
+            energy_rise > RISE_THRESHOLD && current_midrange_energy > PEAK_THRESHOLD;
 
         // NEW HITS OVERRIDE: No cooldown! Let drum hits immediately restart the bounce
         // This gives responsive, punchy animation that follows fast drum patterns
@@ -725,5 +728,11 @@ impl SpectrumPipeline {
             render_pass.set_bind_group(0, &self.bind_group, &[]);
             render_pass.draw(0..3, 0..1);
         } // render_pass dropped here
+    }
+}
+
+impl Pipeline for SpectrumPipeline {
+    fn new(device: &Device, _queue: &Queue, format: TextureFormat) -> Self {
+        SpectrumPipeline::new(device, format)
     }
 }

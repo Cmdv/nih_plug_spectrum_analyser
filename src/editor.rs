@@ -1,17 +1,16 @@
 use crate::audio::meter::MeterConsumer;
 use crate::audio::spectrum::SpectrumConsumer;
-use crate::ui::{MeterDisplay, UITheme, GridShader, SpectrumShader};
+use crate::ui::{GridShader, MeterShader, SpectrumShader, UITheme};
 use crate::SAPluginParams;
 
 use atomic_float::AtomicF32;
 use nih_plug::context::gui::GuiContext;
 use nih_plug_iced::executor::Default;
 use nih_plug_iced::futures::Subscription;
-use nih_plug_iced::widget::canvas::Canvas;
-use nih_plug_iced::widget::{column, container, row, stack, text, shader};
+use nih_plug_iced::widget::{column, container, row, shader, stack, text};
 use nih_plug_iced::widgets::ResizeHandle;
-use nih_plug_iced::{window, IcedState, Padding};
 use nih_plug_iced::{alignment::Horizontal, Element, IcedEditor, Length, Renderer, Task, Theme};
+use nih_plug_iced::{window, IcedState, Padding};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -53,12 +52,10 @@ pub struct PluginEditor {
     /// EDITOR DATA - Grouped UI dependencies
     editor_data: EditorData,
 
-    /// DISPLAY COMPONENTS - Pure rendering
-    meter_display: MeterDisplay,
-
     /// GPU SHADERS - High performance rendering
     grid_shader: GridShader,
     spectrum_shader: SpectrumShader,
+    meter_shader: MeterShader,
 
     /// GUI CONTEXT
     context: Arc<dyn GuiContext>,
@@ -78,24 +75,17 @@ pub fn create_db_display(peak_hold_db: f32) -> Element<'static, Message, Theme, 
         .into()
 }
 
-/// Create level meter canvas widget
-pub fn create_meter_canvas(meter_display: &MeterDisplay) -> Canvas<&MeterDisplay, Message> {
-    Canvas::new(meter_display)
-        .width(Length::Fixed(UITheme::METER_WIDTH))
-        .height(Length::Fill)
-}
-
 /// Create right panel layout with knob and meter
 pub fn create_right_panel<'a>(
     db_display: Element<'a, Message, Theme, Renderer>,
-    meter_canvas: Canvas<&'a MeterDisplay, Message>,
+    meter_widget: Element<'a, Message, Theme, Renderer>,
 ) -> Element<'a, Message, Theme, Renderer> {
     column![
         container(db_display)
             .width(Length::Fill)
             .align_x(Horizontal::Center)
             .padding(UITheme::PADDING_SMALL),
-        container(meter_canvas)
+        container(meter_widget)
             .width(Length::Fill)
             .padding(UITheme::PADDING_SMALL)
     ]
@@ -156,15 +146,13 @@ impl IcedEditor for PluginEditor {
         };
 
         let editor = Self {
-            // DISPLAY COMPONENTS - Pure rendering with new communication channels
-            meter_display: MeterDisplay::new(editor_data.meter_output.clone()),
-
             // GPU SHADERS - High performance rendering
             grid_shader: GridShader::new(),
             spectrum_shader: SpectrumShader::new(
                 editor_data.sample_rate.clone(),
                 editor_data.plugin_params.clone(),
             ),
+            meter_shader: MeterShader::new(editor_data.meter_output.clone()),
 
             // ICED STATE
             iced_state: initialization_flags.iced_state.clone(),
@@ -206,14 +194,23 @@ impl IcedEditor for PluginEditor {
                 Task::none()
             }
             Message::RequestResize(size) => {
+                nih_plug::nih_log!(
+                    "[RESIZE] RequestResize received: {}x{}",
+                    size.width, size.height
+                );
                 // User dragged resize handle - request window resize through iced/baseview
                 // This will trigger a Window::Resized event which will call Message::WindowResized
                 window::resize(size)
             }
             Message::WindowResized(size) => {
+                nih_plug::nih_log!(
+                    "[RESIZE] WindowResized received: {}x{}",
+                    size.width, size.height
+                );
                 // Window was actually resized (from baseview)
                 // Update iced_state to persist the size for next time window opens
-                self.iced_state.set_size(size.width as u32, size.height as u32);
+                self.iced_state
+                    .set_size(size.width as u32, size.height as u32);
                 // Notify the host that the window size changed
                 // If the host rejects it, it will resize us back
                 self.context.request_resize();
@@ -261,10 +258,7 @@ impl IcedEditor for PluginEditor {
                 .height(Length::Fill)
                 .padding(Padding::default().bottom(30)); // 30px bottom padding
 
-            stack![
-                spectrum_container,
-                grid_shader_widget,
-            ]
+            stack![spectrum_container, grid_shader_widget,]
         } else {
             // No audio - just show the grid
             stack![grid_shader_widget]
@@ -272,10 +266,15 @@ impl IcedEditor for PluginEditor {
 
         let db_display =
             create_db_display(self.editor_data.meter_output.get_peak_hold_db_or_silence());
-        let meter_canvas = create_meter_canvas(&self.meter_display);
+
+        // GPU meter shader (handles all updates and normalization internally)
+        let meter_shader = shader(&self.meter_shader)
+            .width(Length::Fixed(UITheme::METER_WIDTH))
+            .height(Length::Fill)
+            .into();
 
         // Compose layout using pure functions
-        let right_panel = create_right_panel(db_display, meter_canvas);
+        let right_panel = create_right_panel(db_display, meter_shader);
 
         // Add resize handle to the right panel at the bottom
         let (current_width, current_height) = self.iced_state.size();
@@ -288,12 +287,14 @@ impl IcedEditor for PluginEditor {
                     .size(20.0)
                     .min_size(400.0, 300.0)
                     .color(nih_plug_iced::Color::from_rgba(0.7, 0.7, 0.7, 0.6))
+                    .screen_cursor(self.iced_state.screen_cursor())
             )
             .width(Length::Fill)
             .align_x(Horizontal::Right)
         ];
 
-        let main_content = create_main_layout_with_stack(layered_spectrum, right_panel_with_resize.into());
+        let main_content =
+            create_main_layout_with_stack(layered_spectrum, right_panel_with_resize.into());
 
         // Apply grey overlay when processing is stopped
         if self.editor_data.process_stopped.load(Ordering::Relaxed) {
